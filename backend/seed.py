@@ -1,4 +1,4 @@
-"""Seed demo data: two tenants (cooperativas), one admin each, and a first
+"""Seed demo data: one tenant (cooperativa), an admin, and a first
 period of invoices so the public lookup has something to show immediately.
 
 Run with: python seed.py
@@ -7,7 +7,7 @@ import datetime as dt
 
 from app.auth import hash_password
 from app.database import Base, SessionLocal, engine
-from app.models import AdminUser, ImportBatch, Invoice, Member, Tenant
+from app.models import AdminUser, ImportBatch, Invoice, Member, PlatformUser, Tenant
 
 Base.metadata.create_all(bind=engine)
 
@@ -15,21 +15,11 @@ db = SessionLocal()
 
 TENANTS = [
     {
-        "slug": "rio-seco",
-        "name": "Cooperativa Eléctrica Río Seco",
-        "mp_alias": "coop.rioseco.mp",
-        "primary_color": "#2563eb",
-        "admin_email": "admin@rioseco.coop",
-        "members": [
-            ("101", "María González", "30111222", 145.0, 18500.0),
-            ("102", "Juan Pérez", "28999111", 210.0, 26900.0),
-            ("103", "Lucas Fernández", "35444555", 98.0, 12750.0),
-        ],
-    },
-    {
         "slug": "valle-verde",
         "name": "Cooperativa de Servicios Valle Verde",
         "mp_alias": "coop.valleverde.mp",
+        "mp_cbu": "0000003100098765432109",
+        "mp_titular": "Cooperativa de Servicios Valle Verde Ltda.",
         "primary_color": "#16a34a",
         "admin_email": "admin@valleverde.coop",
         "members": [
@@ -44,6 +34,14 @@ def run():
     today = dt.date.today()
     year, month = today.year, today.month
 
+    if not db.query(PlatformUser).filter(PlatformUser.email == "dev@coopera.app").first():
+        db.add(
+            PlatformUser(
+                email="dev@coopera.app",
+                hashed_password=hash_password("coopera-dev123"),
+            )
+        )
+
     for t in TENANTS:
         tenant = db.query(Tenant).filter(Tenant.slug == t["slug"]).first()
         if tenant is None:
@@ -51,6 +49,8 @@ def run():
                 slug=t["slug"],
                 name=t["name"],
                 mp_alias=t["mp_alias"],
+                mp_cbu=t["mp_cbu"],
+                mp_titular=t["mp_titular"],
                 primary_color=t["primary_color"],
             )
             db.add(tenant)
@@ -61,7 +61,7 @@ def run():
                 AdminUser(
                     tenant_id=tenant.id,
                     email=t["admin_email"],
-                    hashed_password=hash_password("coopero123"),
+                    hashed_password=hash_password("coopera123"),
                 )
             )
 
@@ -116,8 +116,9 @@ def run():
     db.commit()
     print("Seed listo.")
     print("Tenants: " + ", ".join(t["slug"] for t in TENANTS))
-    print("Admin login: admin@rioseco.coop / coopero123 (y análogo para valle-verde)")
-    print("Socio demo: numero_socio=101, identificador=30111222 (rio-seco)")
+    print("Admin login: admin@valleverde.coop / coopera123")
+    print("Socio demo: numero_socio=201, identificador=29888777 (valle-verde)")
+    print("Dev login: dev@coopera.app / coopera-dev123")
 
 
 if __name__ == "__main__":

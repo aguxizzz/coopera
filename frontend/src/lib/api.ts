@@ -21,9 +21,26 @@ export interface TenantPublic {
   slug: string;
   name: string;
   primary_color: string;
+  contact_email: string | null;
+  contact_phone: string | null;
+  contact_whatsapp: string | null;
+  contact_address: string | null;
+  logo_primary_url: string | null;
+  logo_secondary_url: string | null;
+}
+
+export type TenantSettings = TenantPublic;
+
+export interface TenantSettingsUpdate {
+  contact_email?: string | null;
+  contact_phone?: string | null;
+  contact_whatsapp?: string | null;
+  contact_address?: string | null;
+  primary_color?: string | null;
 }
 
 export interface InvoiceOut {
+  id: number;
   period_year: number;
   period_month: number;
   consumo: number;
@@ -39,9 +56,12 @@ export interface MemberAccount {
   ultima_factura: InvoiceOut | null;
   historial: InvoiceOut[];
   mp_alias: string | null;
+  mp_cbu: string | null;
+  mp_titular: string | null;
 }
 
 export interface MemberRow {
+  id: number;
   numero_socio: string;
   nombre: string;
   identificador: string;
@@ -54,6 +74,32 @@ export interface ImportResult {
   rows_processed: number;
   members_created: number;
   members_updated: number;
+}
+
+export interface TenantSummary {
+  id: number;
+  slug: string;
+  name: string;
+  admin_count: number;
+  member_count: number;
+  created_at: string;
+}
+
+export interface TenantCreate {
+  slug: string;
+  name: string;
+  admin_email: string;
+  admin_password: string;
+  mp_alias?: string | null;
+  mp_cbu?: string | null;
+  mp_titular?: string | null;
+  primary_color?: string;
+}
+
+export interface AdminUserOut {
+  id: number;
+  email: string;
+  created_at: string;
 }
 
 export function getTenant(slug: string) {
@@ -85,6 +131,73 @@ export function listMembers(slug: string, token: string) {
   });
 }
 
+export function deleteMember(slug: string, token: string, memberId: number) {
+  return request<{ deleted: number }>(`/api/t/${slug}/admin/members/${memberId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function deleteMembers(slug: string, token: string, memberIds: number[]) {
+  return request<{ deleted: number }>(`/api/t/${slug}/admin/members/delete`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ member_ids: memberIds }),
+  });
+}
+
+export function listMemberInvoices(slug: string, token: string, memberId: number) {
+  return request<InvoiceOut[]>(`/api/t/${slug}/admin/members/${memberId}/invoices`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function setInvoicePagado(slug: string, token: string, invoiceId: number, pagado: boolean) {
+  return request<InvoiceOut>(`/api/t/${slug}/admin/invoices/${invoiceId}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ pagado }),
+  });
+}
+
+export function getAdminSettings(slug: string, token: string) {
+  return request<TenantSettings>(`/api/t/${slug}/admin/settings`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function updateAdminSettings(slug: string, token: string, payload: TenantSettingsUpdate) {
+  return request<TenantSettings>(`/api/t/${slug}/admin/settings`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function uploadLogo(slug: string, token: string, kind: "primary" | "secondary", file: File) {
+  const form = new FormData();
+  form.append("kind", kind);
+  form.append("file", file);
+
+  const res = await fetch(`${API_BASE}/api/t/${slug}/admin/logo`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new ApiError(body.detail ?? "Ocurrió un error al subir el logo");
+  }
+  return res.json() as Promise<TenantSettings>;
+}
+
+export function deleteLogo(slug: string, token: string, kind: "primary" | "secondary") {
+  return request<TenantSettings>(`/api/t/${slug}/admin/logo?kind=${kind}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
 export async function importSpreadsheet(
   slug: string,
   token: string,
@@ -107,4 +220,56 @@ export async function importSpreadsheet(
     throw new ApiError(body.detail ?? "Ocurrió un error al importar");
   }
   return res.json() as Promise<ImportResult>;
+}
+
+// -- Dev (plataforma) --------------------------------------------------
+
+export function devLogin(email: string, password: string) {
+  return request<{ access_token: string }>(`/api/dev/login`, {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export function listTenants(devToken: string) {
+  return request<TenantSummary[]>(`/api/dev/tenants`, {
+    headers: { Authorization: `Bearer ${devToken}` },
+  });
+}
+
+export function createTenant(devToken: string, payload: TenantCreate) {
+  return request<TenantSettings>(`/api/dev/tenants`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${devToken}` },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listTenantAdmins(devToken: string, slug: string) {
+  return request<AdminUserOut[]>(`/api/dev/tenants/${slug}/admins`, {
+    headers: { Authorization: `Bearer ${devToken}` },
+  });
+}
+
+export function createTenantAdmin(devToken: string, slug: string, email: string, password: string) {
+  return request<AdminUserOut>(`/api/dev/tenants/${slug}/admins`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${devToken}` },
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export function resetTenantAdminPassword(devToken: string, slug: string, adminId: number, password: string) {
+  return request<AdminUserOut>(`/api/dev/tenants/${slug}/admins/${adminId}/reset-password`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${devToken}` },
+    body: JSON.stringify({ password }),
+  });
+}
+
+export function deleteTenantAdmin(devToken: string, slug: string, adminId: number) {
+  return request<AdminUserOut>(`/api/dev/tenants/${slug}/admins/${adminId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${devToken}` },
+  });
 }

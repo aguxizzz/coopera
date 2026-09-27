@@ -25,7 +25,15 @@ class Tenant(Base):
     name: Mapped[str] = mapped_column(String(255))
     custom_domain: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     mp_alias: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mp_cbu: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    mp_titular: Mapped[str | None] = mapped_column(String(255), nullable=True)
     primary_color: Mapped[str] = mapped_column(String(16), default="#2563eb")
+    contact_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    contact_phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    contact_whatsapp: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    contact_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    logo_primary_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    logo_secondary_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     admins: Mapped[list["AdminUser"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
@@ -43,6 +51,18 @@ class AdminUser(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     tenant: Mapped[Tenant] = relationship(back_populates="admins")
+
+
+class PlatformUser(Base):
+    """A Coopera developer/operator. Not tied to any tenant: platform users
+    create cooperativas and can access any tenant's data to troubleshoot."""
+
+    __tablename__ = "platform_users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True)
+    hashed_password: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
 
 class Member(Base):

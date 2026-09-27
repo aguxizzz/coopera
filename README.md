@@ -1,4 +1,4 @@
-# Coopero — prototipo
+# Coopera — prototipo
 
 Plataforma multi-tenant para que cooperativas de servicios gestionen socios,
 consumos y deudas, y para que cada socio consulte su saldo y descargue su
@@ -9,15 +9,15 @@ boleta. Pensada para escalar a más de una cooperativa desde el día uno.
 - **Backend**: FastAPI + SQLAlchemy. `backend/app`
 - **Frontend**: React (Vite) + React Router. `frontend/`
 - **DB**: SQLite por defecto para correr el prototipo sin fricción
-  (`backend/coopero.db`). El modelo ya es compatible con Postgres —
+  (`backend/coopera.db`). El modelo ya es compatible con Postgres —
   `docker-compose.yml` en la raíz levanta un Postgres local; para usarlo,
   descomentá `DATABASE_URL` en `backend/.env`.
 
 ### Multi-tenancy
 
 Cada cooperativa es un `Tenant` (tabla `tenants`) con su propio `slug`. Hoy el
-routing es por path (`/api/t/{slug}/...`, y en el frontend `/rio-seco`,
-`/valle-verde`) porque alcanza para el prototipo. El modelo ya tiene
+routing es por path (`/api/t/{slug}/...`, y en el frontend `/valle-verde`)
+porque alcanza para el prototipo. El modelo ya tiene
 `custom_domain` reservado: pasar a resolver el tenant por el header `Host` en
 vez de por el path (`backend/app/deps.py::get_tenant`) es el único lugar que
 habría que tocar para que cada cooperativa tenga su propio dominio en
@@ -60,13 +60,12 @@ cd backend
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-python seed.py        # crea 2 cooperativas demo con socios y datos de ejemplo
+python seed.py        # crea la cooperativa demo con socios y datos de ejemplo
 uvicorn app.main:app --reload --port 8000
 ```
 
-Admin demo: `admin@rioseco.coop` / `coopero123` (tenant `rio-seco`),
-`admin@valleverde.coop` / `coopero123` (tenant `valle-verde`).
-Socio demo: número de socio `101`, DNI `30111222` (rio-seco).
+Admin demo: `admin@valleverde.coop` / `coopera123` (tenant `valle-verde`).
+Socio demo: número de socio `201`, DNI `29888777` (valle-verde).
 
 ### Frontend
 
@@ -76,9 +75,9 @@ npm install
 npm run dev
 ```
 
-Abrí `http://localhost:5173` — landing con acceso a las cooperativas demo,
-`http://localhost:5173/rio-seco` (portal del socio) y
-`http://localhost:5173/rio-seco/admin` (panel de la cooperativa).
+Abrí `http://localhost:5173` — redirige directo al portal del socio de la
+cooperativa demo (`/valle-verde`); el panel admin está en
+`http://localhost:5173/valle-verde/admin`.
 
 ## Qué falta para producción
 

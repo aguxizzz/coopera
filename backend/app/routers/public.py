@@ -62,6 +62,8 @@ def lookup_member(tenant_slug: str, payload: MemberLookupRequest, db: Session = 
         ultima_factura=InvoiceOut.model_validate(ultima) if ultima else None,
         historial=[InvoiceOut.model_validate(i) for i in historial],
         mp_alias=tenant.mp_alias,
+        mp_cbu=tenant.mp_cbu,
+        mp_titular=tenant.mp_titular,
     )
 
 

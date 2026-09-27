@@ -3,13 +3,13 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: coopero
-      POSTGRES_PASSWORD: coopero
-      POSTGRES_DB: coopero
+      POSTGRES_USER: coopera
+      POSTGRES_PASSWORD: coopera
+      POSTGRES_DB: coopera
     ports:
       - "5432:5432"
     volumes:
-      - coopero_db_data:/var/lib/postgresql/data
+      - coopera_db_data:/var/lib/postgresql/data
 
 volumes:
-  coopero_db_data:
+  coopera_db_data:
