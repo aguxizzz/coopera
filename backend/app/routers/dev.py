@@ -26,6 +26,7 @@ from app.schemas import (
     TenantSummary,
     TokenResponse,
 )
+from app.services.audit import log_action
 
 router = APIRouter(prefix="/api/dev", tags=["dev"])
 
@@ -88,6 +89,7 @@ def create_tenant(
             tenant_id=tenant.id,
             email=payload.admin_email,
             hashed_password=hash_password(payload.admin_password),
+            role="owner",
         )
     )
     db.commit()
@@ -124,7 +126,7 @@ def create_tenant_admin(
     tenant_slug: str,
     payload: AdminCreate,
     db: Session = Depends(get_db),
-    _platform_user: PlatformUser = Depends(get_current_platform_user),
+    platform_user: PlatformUser = Depends(get_current_platform_user),
 ):
     tenant = db.query(Tenant).filter(Tenant.slug == tenant_slug).first()
     if tenant is None:
@@ -136,10 +138,16 @@ def create_tenant_admin(
         tenant_id=tenant.id,
         email=payload.email,
         hashed_password=hash_password(payload.password),
+        role=payload.role,
     )
     db.add(admin)
     db.commit()
     db.refresh(admin)
+    log_action(
+        db, tenant, platform_user, "admin.created",
+        target=f"admin:{admin.id}", details=f"email={admin.email}, role={admin.role}",
+        actor_type="platform",
+    )
     return admin
 
 
@@ -149,7 +157,7 @@ def reset_admin_password(
     admin_id: int,
     payload: AdminPasswordReset,
     db: Session = Depends(get_db),
-    _platform_user: PlatformUser = Depends(get_current_platform_user),
+    platform_user: PlatformUser = Depends(get_current_platform_user),
 ):
     tenant = db.query(Tenant).filter(Tenant.slug == tenant_slug).first()
     if tenant is None:
@@ -164,6 +172,10 @@ def reset_admin_password(
     admin.hashed_password = hash_password(payload.password)
     db.commit()
     db.refresh(admin)
+    log_action(
+        db, tenant, platform_user, "admin.password_reset",
+        target=f"admin:{admin.id}", actor_type="platform",
+    )
     return admin
 
 
@@ -172,7 +184,7 @@ def delete_tenant_admin(
     tenant_slug: str,
     admin_id: int,
     db: Session = Depends(get_db),
-    _platform_user: PlatformUser = Depends(get_current_platform_user),
+    platform_user: PlatformUser = Depends(get_current_platform_user),
 ):
     tenant = db.query(Tenant).filter(Tenant.slug == tenant_slug).first()
     if tenant is None:
@@ -187,4 +199,8 @@ def delete_tenant_admin(
     result = AdminUserOut.model_validate(admin)
     db.delete(admin)
     db.commit()
+    log_action(
+        db, tenant, platform_user, "admin.deleted",
+        target=f"admin:{admin_id}", details=f"email={result.email}", actor_type="platform",
+    )
     return result

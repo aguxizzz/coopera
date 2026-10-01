@@ -1,15 +1,22 @@
+import datetime as dt
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.auth import create_access_token, get_current_admin, verify_password
+from app.auth import create_access_token, get_current_admin, hash_password, require_owner, verify_password
 from app.config import settings
 from app.database import get_db
 from app.deps import get_tenant
-from app.models import AdminUser, Invoice, Member, Tenant
+from app.models import AdminUser, AuditLog, Invoice, Member, Tenant
 from app.rate_limit import limiter
 from app.schemas import (
+    AdminCreate,
     AdminLogin,
+    AdminPasswordReset,
+    AdminRoleUpdate,
+    AdminUserOut,
+    AuditLogOut,
     DeleteMembersRequest,
     DeleteMembersResult,
     ImportResult,
@@ -22,6 +29,7 @@ from app.schemas import (
     TokenResponse,
     UpdateInvoicePagado,
 )
+from app.services.audit import log_action
 from app.services.importer import ImportError_, import_spreadsheet
 from app.services.mercadopago import MercadoPagoError, build_authorize_url, disconnect_tenant
 from app.services.storage import UnsupportedLogoType, delete_logo, upload_logo
@@ -42,6 +50,16 @@ def login(request: Request, tenant_slug: str, payload: AdminLogin, db: Session =
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Credenciales inválidas")
     token = create_access_token(admin.id, tenant.id)
     return TokenResponse(access_token=token)
+
+
+@router.get("/me", response_model=AdminUserOut)
+def me(
+    tenant_slug: str,
+    admin: AdminUser = Depends(get_current_admin),
+):
+    if getattr(admin, "is_platform", False):
+        return AdminUserOut(id=admin.id, email=admin.email, role="owner", created_at=dt.datetime.utcnow())
+    return admin
 
 
 @router.post("/import", response_model=ImportResult)
@@ -142,6 +160,10 @@ def update_invoice_pagado(
     invoice.pagado = payload.pagado
     db.commit()
     db.refresh(invoice)
+    log_action(
+        db, tenant, _admin, "invoice.pagado_updated",
+        target=f"invoice:{invoice.id}", details=f"pagado={payload.pagado}",
+    )
     return invoice
 
 
@@ -162,6 +184,7 @@ def delete_member(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Socio no encontrado")
     db.delete(member)
     db.commit()
+    log_action(db, tenant, _admin, "member.deleted", target=f"member:{member_id}")
     return DeleteMembersResult(deleted=1)
 
 
@@ -183,6 +206,8 @@ def delete_members(
     for member in members:
         db.delete(member)
     db.commit()
+    if members:
+        log_action(db, tenant, _admin, "member.bulk_deleted", details=f"count={len(members)}")
     return DeleteMembersResult(deleted=len(members))
 
 
@@ -203,10 +228,13 @@ def update_settings(
     _admin: AdminUser = Depends(get_current_admin),
 ):
     tenant = get_tenant(tenant_slug, db)
+    changed_fields = list(payload.model_dump(exclude_unset=True).keys())
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(tenant, field, value)
     db.commit()
     db.refresh(tenant)
+    if changed_fields:
+        log_action(db, tenant, _admin, "settings.updated", details=", ".join(changed_fields))
     return tenant
 
 
@@ -262,23 +290,26 @@ def mp_status(
 def mp_connect_url(
     tenant_slug: str,
     db: Session = Depends(get_db),
-    _admin: AdminUser = Depends(get_current_admin),
+    admin: AdminUser = Depends(require_owner),
 ):
     tenant = get_tenant(tenant_slug, db)
     try:
-        return MpConnectUrlOut(url=build_authorize_url(tenant.slug))
+        url = build_authorize_url(tenant.slug)
     except MercadoPagoError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    log_action(db, tenant, admin, "mp.connect_url_requested")
+    return MpConnectUrlOut(url=url)
 
 
 @router.delete("/mp", response_model=MpStatusOut)
 def mp_disconnect(
     tenant_slug: str,
     db: Session = Depends(get_db),
-    _admin: AdminUser = Depends(get_current_admin),
+    admin: AdminUser = Depends(require_owner),
 ):
     tenant = get_tenant(tenant_slug, db)
     disconnect_tenant(db, tenant)
+    log_action(db, tenant, admin, "mp.disconnected")
     return MpStatusOut(configured=settings.mp_configured, connected=False, mp_user_id=None)
 
 
@@ -305,3 +336,151 @@ def delete_tenant_logo(
         delete_logo(old_url)
 
     return tenant
+
+
+# --- Admin management (roles) ---------------------------------------------
+# Only owners can see/manage this tenant's admin roster. Connecting or
+# disconnecting Mercado Pago is also owner-only (see above), so promoting
+# someone to owner is effectively granting them that power.
+
+
+@router.get("/admins", response_model=list[AdminUserOut])
+def list_admins(
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(require_owner),
+):
+    tenant = get_tenant(tenant_slug, db)
+    return db.query(AdminUser).filter(AdminUser.tenant_id == tenant.id).order_by(AdminUser.email).all()
+
+
+@router.post("/admins", response_model=AdminUserOut)
+def create_admin(
+    tenant_slug: str,
+    payload: AdminCreate,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(require_owner),
+):
+    tenant = get_tenant(tenant_slug, db)
+    if db.query(AdminUser).filter(AdminUser.tenant_id == tenant.id, AdminUser.email == payload.email).first():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Ya existe un admin con ese email en esta cooperativa")
+
+    new_admin = AdminUser(
+        tenant_id=tenant.id,
+        email=payload.email,
+        hashed_password=hash_password(payload.password),
+        role=payload.role,
+    )
+    db.add(new_admin)
+    db.commit()
+    db.refresh(new_admin)
+    log_action(
+        db, tenant, admin, "admin.created",
+        target=f"admin:{new_admin.id}", details=f"email={new_admin.email}, role={new_admin.role}",
+    )
+    return new_admin
+
+
+def _require_not_last_owner(db: Session, tenant: Tenant, admin_id: int) -> None:
+    owners = (
+        db.query(AdminUser)
+        .filter(AdminUser.tenant_id == tenant.id, AdminUser.role == "owner", AdminUser.id != admin_id)
+        .count()
+    )
+    if owners == 0:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "La cooperativa debe conservar al menos un administrador owner",
+        )
+
+
+@router.patch("/admins/{admin_id}/role", response_model=AdminUserOut)
+def update_admin_role(
+    tenant_slug: str,
+    admin_id: int,
+    payload: AdminRoleUpdate,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(require_owner),
+):
+    tenant = get_tenant(tenant_slug, db)
+    target_admin = (
+        db.query(AdminUser).filter(AdminUser.id == admin_id, AdminUser.tenant_id == tenant.id).first()
+    )
+    if target_admin is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Admin no encontrado")
+    if target_admin.role == "owner" and payload.role != "owner":
+        _require_not_last_owner(db, tenant, target_admin.id)
+
+    target_admin.role = payload.role
+    db.commit()
+    db.refresh(target_admin)
+    log_action(
+        db, tenant, admin, "admin.role_updated",
+        target=f"admin:{target_admin.id}", details=f"role={payload.role}",
+    )
+    return target_admin
+
+
+@router.post("/admins/{admin_id}/reset-password", response_model=AdminUserOut)
+def reset_admin_password(
+    tenant_slug: str,
+    admin_id: int,
+    payload: AdminPasswordReset,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(require_owner),
+):
+    tenant = get_tenant(tenant_slug, db)
+    target_admin = (
+        db.query(AdminUser).filter(AdminUser.id == admin_id, AdminUser.tenant_id == tenant.id).first()
+    )
+    if target_admin is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Admin no encontrado")
+    target_admin.hashed_password = hash_password(payload.password)
+    db.commit()
+    db.refresh(target_admin)
+    log_action(db, tenant, admin, "admin.password_reset", target=f"admin:{target_admin.id}")
+    return target_admin
+
+
+@router.delete("/admins/{admin_id}", response_model=AdminUserOut)
+def delete_admin(
+    tenant_slug: str,
+    admin_id: int,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(require_owner),
+):
+    tenant = get_tenant(tenant_slug, db)
+    target_admin = (
+        db.query(AdminUser).filter(AdminUser.id == admin_id, AdminUser.tenant_id == tenant.id).first()
+    )
+    if target_admin is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Admin no encontrado")
+    if not getattr(admin, "is_platform", False) and target_admin.id == admin.id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No podés eliminarte a vos mismo")
+    if target_admin.role == "owner":
+        _require_not_last_owner(db, tenant, target_admin.id)
+
+    result = AdminUserOut.model_validate(target_admin)
+    db.delete(target_admin)
+    db.commit()
+    log_action(
+        db, tenant, admin, "admin.deleted",
+        target=f"admin:{admin_id}", details=f"email={result.email}",
+    )
+    return result
+
+
+@router.get("/audit-log", response_model=list[AuditLogOut])
+def get_audit_log(
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(require_owner),
+):
+    tenant = get_tenant(tenant_slug, db)
+    return (
+        db.query(AuditLog)
+        .filter(AuditLog.tenant_id == tenant.id)
+        .order_by(AuditLog.created_at.desc())
+        .limit(200)
+        .all()
+    )

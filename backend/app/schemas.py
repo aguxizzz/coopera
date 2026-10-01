@@ -1,4 +1,5 @@
 import datetime as dt
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -145,6 +146,7 @@ class TenantCreate(BaseModel):
 class AdminUserOut(BaseModel):
     id: int
     email: str
+    role: str
     created_at: dt.datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -153,7 +155,24 @@ class AdminUserOut(BaseModel):
 class AdminCreate(BaseModel):
     email: str
     password: str
+    role: Literal["owner", "staff"] = "staff"
 
 
 class AdminPasswordReset(BaseModel):
     password: str
+
+
+class AdminRoleUpdate(BaseModel):
+    role: Literal["owner", "staff"]
+
+
+class AuditLogOut(BaseModel):
+    id: int
+    actor_type: str
+    actor_email: str
+    action: str
+    target: str | None
+    details: str | None
+    created_at: dt.datetime
+
+    model_config = ConfigDict(from_attributes=True)

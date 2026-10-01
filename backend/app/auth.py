@@ -25,6 +25,7 @@ class PlatformActor:
         self.email = platform_user.email
         self.tenant_id = tenant_id
         self.is_platform = True
+        self.role = "owner"
 
 
 def hash_password(password: str) -> str:
@@ -90,3 +91,15 @@ def get_current_admin(
     if admin is None or admin.tenant_id != tenant.id:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Usuario no encontrado")
     return admin
+
+
+def require_owner(admin: AdminUser = Depends(get_current_admin)) -> AdminUser:
+    """Gate for actions reserved to a tenant's owner admins: managing other
+    admins and connecting/disconnecting Mercado Pago. Platform staff always
+    pass (they act as an implicit owner for troubleshooting)."""
+    if getattr(admin, "is_platform", False) or admin.role == "owner":
+        return admin
+    raise HTTPException(
+        status.HTTP_403_FORBIDDEN,
+        "Se requiere rol de administrador principal (owner) para esta acción",
+    )

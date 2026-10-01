@@ -59,6 +59,11 @@ class AdminUser(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     email: Mapped[str] = mapped_column(String(255))
     hashed_password: Mapped[str] = mapped_column(String(255))
+    # "owner": full access, including managing other admins and connecting/
+    # disconnecting Mercado Pago. "staff": everyday admin tasks (socios,
+    # facturas, import) but not those two. Every tenant must keep at least
+    # one owner (enforced in the admin-management endpoints).
+    role: Mapped[str] = mapped_column(String(16), default="owner", server_default="owner")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     tenant: Mapped[Tenant] = relationship(back_populates="admins")
@@ -137,3 +142,21 @@ class Invoice(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     member: Mapped[Member] = relationship(back_populates="invoices")
+
+
+class AuditLog(Base):
+    """Who did what, for sensitive tenant actions (Mercado Pago connect/
+    disconnect, admin management, settings/logo changes, etc). `actor_email`
+    is denormalized so the trail survives the actor being deleted later."""
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    actor_type: Mapped[str] = mapped_column(String(16))  # "admin" | "platform"
+    actor_id: Mapped[int]
+    actor_email: Mapped[str] = mapped_column(String(255))
+    action: Mapped[str] = mapped_column(String(64))
+    target: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    details: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, index=True)

@@ -235,3 +235,112 @@ def test_platform_token_can_access_tenant_admin_routes(client, tenant, platform_
     resp = client.get(f"/api/t/{tenant.slug}/admin/members", headers=platform_headers)
     assert resp.status_code == 200
     assert len(resp.json()) == 1
+
+
+def _create_staff(client, tenant, admin_headers, email="staff@coopera.test"):
+    resp = client.post(
+        f"/api/t/{tenant.slug}/admin/admins",
+        headers=admin_headers,
+        json={"email": email, "password": "staffpass1", "role": "staff"},
+    )
+    assert resp.status_code == 200
+    return resp.json()
+
+
+def _login(client, tenant, email, password):
+    resp = client.post(
+        f"/api/t/{tenant.slug}/admin/login", json={"email": email, "password": password}
+    )
+    assert resp.status_code == 200
+    token = resp.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_admin_create_defaults_to_staff_role(client, tenant, admin_headers):
+    created = _create_staff(client, tenant, admin_headers)
+    assert created["role"] == "staff"
+
+
+def test_staff_cannot_connect_or_disconnect_mp(client, tenant, admin_headers):
+    _create_staff(client, tenant, admin_headers)
+    staff_headers = _login(client, tenant, "staff@coopera.test", "staffpass1")
+
+    resp = client.get(f"/api/t/{tenant.slug}/admin/mp/connect-url", headers=staff_headers)
+    assert resp.status_code == 403
+
+    resp = client.delete(f"/api/t/{tenant.slug}/admin/mp", headers=staff_headers)
+    assert resp.status_code == 403
+
+
+def test_staff_cannot_manage_admins(client, tenant, admin_headers):
+    _create_staff(client, tenant, admin_headers)
+    staff_headers = _login(client, tenant, "staff@coopera.test", "staffpass1")
+
+    resp = client.get(f"/api/t/{tenant.slug}/admin/admins", headers=staff_headers)
+    assert resp.status_code == 403
+
+
+def test_owner_can_list_and_manage_admins(client, tenant, admin, admin_headers):
+    created = _create_staff(client, tenant, admin_headers)
+
+    resp = client.get(f"/api/t/{tenant.slug}/admin/admins", headers=admin_headers)
+    assert resp.status_code == 200
+    emails = {row["email"] for row in resp.json()}
+    assert {admin.email, "staff@coopera.test"} == emails
+
+    resp = client.patch(
+        f"/api/t/{tenant.slug}/admin/admins/{created['id']}/role",
+        headers=admin_headers,
+        json={"role": "owner"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["role"] == "owner"
+
+    resp = client.delete(f"/api/t/{tenant.slug}/admin/admins/{created['id']}", headers=admin_headers)
+    assert resp.status_code == 200
+
+
+def test_cannot_demote_or_delete_last_owner(client, tenant, admin, admin_headers):
+    resp = client.patch(
+        f"/api/t/{tenant.slug}/admin/admins/{admin.id}/role",
+        headers=admin_headers,
+        json={"role": "staff"},
+    )
+    assert resp.status_code == 400
+
+    resp = client.delete(f"/api/t/{tenant.slug}/admin/admins/{admin.id}", headers=admin_headers)
+    assert resp.status_code == 400
+
+
+def test_owner_cannot_delete_self_via_admins_endpoint(client, tenant, admin, admin_headers, db_session):
+    # add a second owner first so "last owner" isn't the blocker being tested
+    from app.auth import hash_password
+    from app.models import AdminUser
+
+    other_owner = AdminUser(
+        tenant_id=tenant.id,
+        email="owner2@coopera.test",
+        hashed_password=hash_password("ownerpass1"),
+        role="owner",
+    )
+    db_session.add(other_owner)
+    db_session.commit()
+
+    resp = client.delete(f"/api/t/{tenant.slug}/admin/admins/{admin.id}", headers=admin_headers)
+    assert resp.status_code == 400
+
+
+def test_audit_log_records_sensitive_actions(client, tenant, admin, admin_headers, db_session):
+    tenant.mp_access_token = "whatever-encrypted"
+    db_session.commit()
+
+    client.delete(f"/api/t/{tenant.slug}/admin/mp", headers=admin_headers)
+    _create_staff(client, tenant, admin_headers)
+
+    resp = client.get(f"/api/t/{tenant.slug}/admin/audit-log", headers=admin_headers)
+    assert resp.status_code == 200
+    actions = [row["action"] for row in resp.json()]
+    assert "mp.disconnected" in actions
+    assert "admin.created" in actions
+    for row in resp.json():
+        assert row["actor_email"] == admin.email
