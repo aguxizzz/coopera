@@ -3,7 +3,7 @@ their admins across tenants. Cross-tenant data access (socios, facturas,
 config, import) reuses the existing `/api/t/{slug}/admin/...` endpoints —
 `get_current_admin` accepts a platform token for any tenant_slug."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -15,6 +15,7 @@ from app.auth import (
 )
 from app.database import get_db
 from app.models import AdminUser, Member, PlatformUser, Tenant
+from app.rate_limit import limiter
 from app.schemas import (
     AdminCreate,
     AdminPasswordReset,
@@ -30,7 +31,8 @@ router = APIRouter(prefix="/api/dev", tags=["dev"])
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(payload: PlatformLogin, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def login(request: Request, payload: PlatformLogin, db: Session = Depends(get_db)):
     user = db.query(PlatformUser).filter(PlatformUser.email == payload.email).first()
     if user is None or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Credenciales inválidas")

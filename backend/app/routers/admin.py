@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -7,6 +7,7 @@ from app.config import settings
 from app.database import get_db
 from app.deps import get_tenant
 from app.models import AdminUser, Invoice, Member, Tenant
+from app.rate_limit import limiter
 from app.schemas import (
     AdminLogin,
     DeleteMembersRequest,
@@ -29,7 +30,8 @@ router = APIRouter(prefix="/api/t/{tenant_slug}/admin", tags=["admin"])
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(tenant_slug: str, payload: AdminLogin, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def login(request: Request, tenant_slug: str, payload: AdminLogin, db: Session = Depends(get_db)):
     tenant = get_tenant(tenant_slug, db)
     admin = (
         db.query(AdminUser)

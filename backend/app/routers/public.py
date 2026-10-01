@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.deps import get_tenant
 from app.models import Invoice, Member, Tenant
+from app.rate_limit import limiter
 from app.schemas import (
     InvoiceOut,
     MemberAccountOut,
@@ -50,7 +51,10 @@ def get_tenant_info(tenant_slug: str, db: Session = Depends(get_db)):
 
 
 @router.post("/lookup", response_model=MemberAccountOut)
-def lookup_member(tenant_slug: str, payload: MemberLookupRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def lookup_member(
+    request: Request, tenant_slug: str, payload: MemberLookupRequest, db: Session = Depends(get_db)
+):
     tenant = get_tenant(tenant_slug, db)
     member = _find_member(db, tenant, payload.numero_socio, payload.identificador)
 
@@ -77,7 +81,9 @@ def lookup_member(tenant_slug: str, payload: MemberLookupRequest, db: Session = 
 
 
 @router.post("/invoices/{invoice_id}/pay", response_model=PayInvoiceResponse)
+@limiter.limit("10/minute")
 def pay_invoice(
+    request: Request,
     tenant_slug: str,
     invoice_id: int,
     payload: PayInvoiceRequest,
@@ -109,7 +115,9 @@ def pay_invoice(
 
 
 @router.get("/boleta.pdf")
+@limiter.limit("10/minute")
 def download_boleta(
+    request: Request,
     tenant_slug: str,
     numero_socio: str,
     identificador: str,

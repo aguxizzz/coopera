@@ -12,6 +12,7 @@ openpyxl
 reportlab
 boto3
 httpx
+slowapi
 
 # dev / test
 pytest
