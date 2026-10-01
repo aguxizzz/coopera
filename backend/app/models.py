@@ -34,6 +34,17 @@ class Tenant(Base):
     contact_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
     logo_primary_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     logo_secondary_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    # Mercado Pago OAuth "Connect": set once the tenant's admin authorizes
+    # Coopera's MP app against their own MP account. Tokens are stored
+    # Fernet-encrypted (see app/services/mercadopago.py) and refreshed
+    # automatically before they expire.
+    mp_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    mp_access_token: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    mp_refresh_token: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    mp_public_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mp_token_expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     admins: Mapped[list["AdminUser"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
@@ -115,6 +126,14 @@ class Invoice(Base):
     monto: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
     vencimiento: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     pagado: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Set when a Mercado Pago payment preference/payment is created for this
+    # invoice (app/services/mercadopago.py). `mp_preference_id` identifies the
+    # checkout; `mp_payment_id` is filled once a payment notification for it
+    # arrives via the tenant's webhook.
+    mp_preference_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    mp_payment_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     member: Mapped[Member] = relationship(back_populates="invoices")

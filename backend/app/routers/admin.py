@@ -3,6 +3,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.auth import create_access_token, get_current_admin, verify_password
+from app.config import settings
 from app.database import get_db
 from app.deps import get_tenant
 from app.models import AdminUser, Invoice, Member, Tenant
@@ -13,12 +14,15 @@ from app.schemas import (
     ImportResult,
     InvoiceOut,
     MemberRow,
+    MpConnectUrlOut,
+    MpStatusOut,
     TenantSettingsOut,
     TenantSettingsUpdate,
     TokenResponse,
     UpdateInvoicePagado,
 )
 from app.services.importer import ImportError_, import_spreadsheet
+from app.services.mercadopago import MercadoPagoError, build_authorize_url, disconnect_tenant
 from app.services.storage import UnsupportedLogoType, delete_logo, upload_logo
 
 router = APIRouter(prefix="/api/t/{tenant_slug}/admin", tags=["admin"])
@@ -236,6 +240,44 @@ async def upload_tenant_logo(
         delete_logo(old_url)
 
     return tenant
+
+
+@router.get("/mp/status", response_model=MpStatusOut)
+def mp_status(
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    return MpStatusOut(
+        configured=settings.mp_configured,
+        connected=bool(tenant.mp_access_token),
+        mp_user_id=tenant.mp_user_id,
+    )
+
+
+@router.get("/mp/connect-url", response_model=MpConnectUrlOut)
+def mp_connect_url(
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    try:
+        return MpConnectUrlOut(url=build_authorize_url(tenant.slug))
+    except MercadoPagoError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+
+
+@router.delete("/mp", response_model=MpStatusOut)
+def mp_disconnect(
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    disconnect_tenant(db, tenant)
+    return MpStatusOut(configured=settings.mp_configured, connected=False, mp_user_id=None)
 
 
 @router.delete("/logo", response_model=TenantSettingsOut)

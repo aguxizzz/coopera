@@ -6,7 +6,15 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.deps import get_tenant
 from app.models import Invoice, Member, Tenant
-from app.schemas import InvoiceOut, MemberAccountOut, MemberLookupRequest, TenantPublic
+from app.schemas import (
+    InvoiceOut,
+    MemberAccountOut,
+    MemberLookupRequest,
+    PayInvoiceRequest,
+    PayInvoiceResponse,
+    TenantPublic,
+)
+from app.services.mercadopago import MercadoPagoError, create_preference
 from app.services.pdf import build_boleta_pdf
 
 router = APIRouter(prefix="/api/t/{tenant_slug}", tags=["public"])
@@ -64,7 +72,40 @@ def lookup_member(tenant_slug: str, payload: MemberLookupRequest, db: Session = 
         mp_alias=tenant.mp_alias,
         mp_cbu=tenant.mp_cbu,
         mp_titular=tenant.mp_titular,
+        mp_connected=bool(tenant.mp_access_token),
     )
+
+
+@router.post("/invoices/{invoice_id}/pay", response_model=PayInvoiceResponse)
+def pay_invoice(
+    tenant_slug: str,
+    invoice_id: int,
+    payload: PayInvoiceRequest,
+    db: Session = Depends(get_db),
+):
+    tenant = get_tenant(tenant_slug, db)
+    member = _find_member(db, tenant, payload.numero_socio, payload.identificador)
+
+    invoice = (
+        db.query(Invoice)
+        .filter(Invoice.id == invoice_id, Invoice.member_id == member.id)
+        .first()
+    )
+    if invoice is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Factura no encontrada")
+    if invoice.pagado:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Esta factura ya está pagada")
+    if not tenant.mp_access_token:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Esta cooperativa todavía no conectó Mercado Pago"
+        )
+
+    try:
+        preference = create_preference(db, tenant, member, invoice)
+    except MercadoPagoError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
+
+    return PayInvoiceResponse(init_point=preference["init_point"])
 
 
 @router.get("/boleta.pdf")

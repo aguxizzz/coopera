@@ -12,3 +12,7 @@ openpyxl
 reportlab
 boto3
 httpx
+
+# dev / test
+pytest
+pytest-cov

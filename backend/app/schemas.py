@@ -69,6 +69,26 @@ class MemberAccountOut(BaseModel):
     mp_alias: str | None
     mp_cbu: str | None
     mp_titular: str | None
+    mp_connected: bool
+
+
+class PayInvoiceRequest(BaseModel):
+    numero_socio: str
+    identificador: str
+
+
+class PayInvoiceResponse(BaseModel):
+    init_point: str
+
+
+class MpStatusOut(BaseModel):
+    configured: bool
+    connected: bool
+    mp_user_id: str | None
+
+
+class MpConnectUrlOut(BaseModel):
+    url: str
 
 
 class MemberRow(BaseModel):
