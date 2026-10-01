@@ -19,7 +19,7 @@ config = context.config
 
 # Use the app's own settings instead of the static value in alembic.ini, so
 # migrations always run against whatever DATABASE_URL the app is configured
-# with (sqlite for local dev, Postgres in prod).
+# with (Postgres/Neon by default, sqlite only if USE_SQLITE=true).
 config.set_main_option("sqlalchemy.url", settings.database_url)
 
 # Interpret the config file for Python logging.

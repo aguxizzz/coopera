@@ -8,10 +8,11 @@ boleta. Pensada para escalar a más de una cooperativa desde el día uno.
 
 - **Backend**: FastAPI + SQLAlchemy. `backend/app`
 - **Frontend**: React (Vite) + React Router. `frontend/`
-- **DB**: SQLite por defecto para correr el prototipo sin fricción
-  (`backend/coopera.db`). El modelo ya es compatible con Postgres —
-  `docker-compose.yml` en la raíz levanta un Postgres local; para usarlo,
-  descomentá `DATABASE_URL` en `backend/.env`.
+- **DB**: Postgres (Neon) por defecto, tanto en local como en prod —
+  `DATABASE_URL` en `backend/.env` apunta a Neon. Para correr contra SQLite
+  local sin fricción (`backend/coopera.db`), seteá `USE_SQLITE=true` en
+  `backend/.env` (nunca en prod). `docker-compose.yml` en la raíz también
+  levanta un Postgres local si preferís eso en vez de Neon.
 
 ### Multi-tenancy
 

@@ -1,8 +1,16 @@
 from pydantic_settings import BaseSettings
 
+# Local-only escape hatch: set USE_SQLITE=true to run against a throwaway
+# sqlite file instead of Postgres/Neon. Prod must never set this.
+_SQLITE_FALLBACK_URL = "sqlite:///./coopera.db"
+
 
 class Settings(BaseSettings):
-    database_url: str = "sqlite:///./coopera.db"
+    # No default on purpose: both local dev and prod are expected to point
+    # at a real Postgres/Neon database via DATABASE_URL. Set USE_SQLITE=true
+    # locally if you want zero-setup sqlite instead.
+    database_url: str = ""
+    use_sqlite: bool = False
     jwt_secret: str = "change-me-in-production"
     jwt_expire_minutes: int = 480
     cors_origins: str = "http://localhost:5173"
@@ -62,4 +70,16 @@ class Settings(BaseSettings):
         return f"{self.public_base_url.rstrip('/')}/api/mp/oauth/callback"
 
 
+def _resolve_database_url(raw: "Settings") -> str:
+    if raw.use_sqlite:
+        return _SQLITE_FALLBACK_URL
+    if not raw.database_url:
+        raise RuntimeError(
+            "DATABASE_URL is not set. Point it at your Neon/Postgres "
+            "database, or set USE_SQLITE=true for local-only sqlite."
+        )
+    return raw.database_url
+
+
 settings = Settings()
+settings.database_url = _resolve_database_url(settings)
