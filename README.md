@@ -41,15 +41,37 @@ Esto está pensado para ampliarse a otras fuentes (API del sistema interno de
 la cooperativa, carga manual, etc.) sin tocar el resto: alcanza con agregar
 otro "importer" que termine escribiendo `Member` + `Invoice`.
 
-### Pagos
+### Pagos (Mercado Pago)
 
-Hoy se muestra el alias de Mercado Pago del tenant (`Tenant.mp_alias`) para
-que el socio pague por fuera. Para integrar pagos dentro de la web (Checkout
-Pro / Checkout API de Mercado Pago), el punto de entrada natural es un nuevo
-endpoint `POST /api/t/{slug}/invoices/{id}/pay` que cree una preferencia de
-pago con las credenciales de Mercado Pago **de ese tenant** (agregar
-`mp_access_token` a `Tenant`), y un webhook `POST /api/t/{slug}/mp/webhook`
-que marque `Invoice.pagado = True` al confirmarse el pago.
+Cada cooperativa conecta **su propia** cuenta de Mercado Pago vía OAuth
+("Mercado Pago Connect") desde Configuración en el panel admin — el dinero se
+acredita directamente en su cuenta, Coopera nunca lo recibe ni guarda sus
+credenciales de MP en texto plano (se guardan encriptadas con Fernet,
+derivando la clave de `JWT_SECRET`).
+
+Flujo (`backend/app/services/mercadopago.py` + `backend/app/routers/mp.py`):
+
+1. El admin hace clic en "Conectar con Mercado Pago" → se lo redirige a MP
+   con un `state` firmado que identifica al tenant.
+2. MP redirige de vuelta a `GET /api/mp/oauth/callback` (una única URL fija,
+   registrada en la aplicación de MP) → se intercambia el `code` por un
+   access/refresh token que se guardan en el `Tenant`.
+3. El socio hace clic en "Pagar" (`TenantPortal`) → `POST
+   /api/t/{slug}/invoices/{id}/pay` crea una preferencia de Checkout Pro con
+   el token del tenant (renovándolo solo si está por vencer) y lo redirige al
+   `init_point`.
+4. Mercado Pago notifica el pago a `POST /api/t/{slug}/mp/webhook` →
+   se consulta el pago con el token del tenant y, si está aprobado, se marca
+   `Invoice.pagado = True`.
+
+Para habilitarlo hay que crear **una** aplicación en el [panel de
+desarrolladores de Mercado Pago](https://www.mercadopago.com.ar/developers/panel/app)
+(para todo el deployment de Coopera, no una por cooperativa), registrar
+`PUBLIC_BASE_URL/api/mp/oauth/callback` como redirect URI, y completar
+`MP_CLIENT_ID` / `MP_CLIENT_SECRET` en `backend/.env` (ver `.env.example`).
+Mientras no estén configuradas, el botón de conectar simplemente no aparece
+habilitado — el alias/CBU manual (`Tenant.mp_alias`) sigue funcionando como
+alternativa u opción de respaldo.
 
 ## Correr el prototipo
 
@@ -60,9 +82,28 @@ cd backend
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+alembic upgrade head  # crea/actualiza el esquema de la DB
 python seed.py        # crea la cooperativa demo con socios y datos de ejemplo
 uvicorn app.main:app --reload --port 8000
 ```
+
+### Migraciones (Alembic)
+
+El esquema se versiona con Alembic (`backend/alembic/`), no con el modelo de
+SQLAlchemy directamente. `alembic/env.py` toma la URL de conexión de
+`app.config.settings`, así que usa la misma DB que la app (SQLite o Postgres
+según `DATABASE_URL`).
+
+```bash
+cd backend
+alembic upgrade head                        # aplicar migraciones pendientes
+alembic revision --autogenerate -m "algo"   # generar una migración tras cambiar app/models.py
+alembic downgrade -1                        # revertir la última
+```
+
+Siempre revisá a mano la migración autogenerada antes de commitear: Alembic no
+detecta renombres de columnas/tablas (los ve como drop + add) ni cambios de
+tipo en SQLite de forma perfecta.
 
 Admin demo: `admin@valleverde.coop` / `coopera123` (tenant `valle-verde`).
 Socio demo: número de socio `201`, DNI `29888777` (valle-verde).
@@ -85,5 +126,8 @@ cooperativa demo (`/valle-verde`); el panel admin está en
 - Alta de tenants vía un panel superadmin (hoy se crean con `seed.py` o
   directo en la DB).
 - Resolución de tenant por dominio propio en vez de por path.
-- Integración real de pagos (Mercado Pago) y su webhook.
 - Notificaciones (email/WhatsApp) al socio cuando se sube una planilla nueva.
+- Tests automatizados (no hay ninguno todavía).
+- Validar la firma `x-signature` de los webhooks de Mercado Pago (hoy se
+  confía en el `payment_id` y se re-consulta el pago, que ya es razonablemente
+  seguro, pero MP recomienda además validar la firma del request).
