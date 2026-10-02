@@ -7,7 +7,7 @@ import datetime as dt
 
 from app.auth import hash_password
 from app.database import Base, SessionLocal, engine
-from app.models import AdminUser, ImportBatch, Invoice, Member, PlatformUser, Tenant
+from app.models import AdminUser, Gestor, ImportBatch, Invoice, Member, Meter, PlatformUser, Tenant
 
 Base.metadata.create_all(bind=engine)
 
@@ -25,6 +25,13 @@ TENANTS = [
         "members": [
             ("201", "Ana Torres", "29888777", 180.0, 21300.0),
             ("202", "Carlos Díaz", "31555666", 132.0, 17400.0),
+        ],
+        "gestor_email": "gestor@valleverde.coop",
+        "gestor_nombre": "Jorge Ramírez",
+        "meters": [
+            # (numero_socio, codigo, tipo, direccion, unidad)
+            ("201", "LUZ-201-01", "luz", "Calle Falsa 123", "kWh"),
+            ("202", "LUZ-202-01", "luz", "Av. Siempreviva 742", "kWh"),
         ],
     },
 ]
@@ -113,12 +120,46 @@ def run():
             invoice.monto = monto
             invoice.vencimiento = today + dt.timedelta(days=15)
 
+        if not db.query(Gestor).filter(Gestor.tenant_id == tenant.id, Gestor.email == t["gestor_email"]).first():
+            db.add(
+                Gestor(
+                    tenant_id=tenant.id,
+                    nombre=t["gestor_nombre"],
+                    email=t["gestor_email"],
+                    hashed_password=hash_password("gestor123"),
+                )
+            )
+
+        for numero, codigo, tipo, direccion, unidad in t["meters"]:
+            member = (
+                db.query(Member)
+                .filter(Member.tenant_id == tenant.id, Member.numero_socio == numero)
+                .first()
+            )
+            meter = (
+                db.query(Meter)
+                .filter(Meter.tenant_id == tenant.id, Meter.codigo == codigo)
+                .first()
+            )
+            if meter is None:
+                db.add(
+                    Meter(
+                        tenant_id=tenant.id,
+                        member_id=member.id,
+                        codigo=codigo,
+                        tipo=tipo,
+                        direccion=direccion,
+                        unidad=unidad,
+                    )
+                )
+
     db.commit()
     print("Seed listo.")
     print("Tenants: " + ", ".join(t["slug"] for t in TENANTS))
     print("Admin login: admin@valleverde.coop / coopera123")
     print("Socio demo: numero_socio=201, identificador=29888777 (valle-verde)")
     print("Dev login: dev@coopera.app / coopera-dev123")
+    print("Gestor demo (app mobile): gestor@valleverde.coop / gestor123 (tenant=valle-verde)")
 
 
 if __name__ == "__main__":

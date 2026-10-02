@@ -3,7 +3,9 @@ their admins across tenants. Cross-tenant data access (socios, facturas,
 config, import) reuses the existing `/api/t/{slug}/admin/...` endpoints —
 `get_current_admin` accepts a platform token for any tenant_slug."""
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+import json
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -14,12 +16,15 @@ from app.auth import (
     verify_password,
 )
 from app.database import get_db
-from app.models import AdminUser, Member, PlatformUser, Tenant
+from app.models import AdminUser, Member, PdfImportProfile, PlatformUser, Tenant
 from app.rate_limit import limiter
 from app.schemas import (
     AdminCreate,
     AdminPasswordReset,
     AdminUserOut,
+    PdfProfileIn,
+    PdfProfileOut,
+    PdfProfilePreviewPage,
     PlatformLogin,
     TenantCreate,
     TenantSettingsOut,
@@ -27,6 +32,7 @@ from app.schemas import (
     TokenResponse,
 )
 from app.services.audit import log_action
+from app.services.pdf_importer import PdfProfileError, preview_profile
 
 router = APIRouter(prefix="/api/dev", tags=["dev"])
 
@@ -204,3 +210,72 @@ def delete_tenant_admin(
         target=f"admin:{admin_id}", details=f"email={result.email}", actor_type="platform",
     )
     return result
+
+
+@router.post("/tenants/{tenant_slug}/pdf-profile/test", response_model=list[PdfProfilePreviewPage])
+async def test_pdf_profile(
+    tenant_slug: str,
+    field_patterns: str = Form(..., description="JSON object: field name -> regex with one capture group"),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _platform_user: PlatformUser = Depends(get_current_platform_user),
+):
+    """Dry-run a candidate extraction profile against a sample PDF (no DB
+    writes) so a dev can iterate on the regex before saving it."""
+    tenant = db.query(Tenant).filter(Tenant.slug == tenant_slug).first()
+    if tenant is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Cooperativa no encontrada")
+
+    try:
+        patterns = json.loads(field_patterns)
+    except json.JSONDecodeError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "field_patterns debe ser un JSON válido")
+    if not isinstance(patterns, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "field_patterns debe ser un objeto {campo: regex}")
+
+    content = await file.read()
+    try:
+        return preview_profile(content, patterns)
+    except PdfProfileError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+
+
+@router.get("/tenants/{tenant_slug}/pdf-profile", response_model=PdfProfileOut | None)
+def get_pdf_profile(
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    _platform_user: PlatformUser = Depends(get_current_platform_user),
+):
+    tenant = db.query(Tenant).filter(Tenant.slug == tenant_slug).first()
+    if tenant is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Cooperativa no encontrada")
+    return db.query(PdfImportProfile).filter(PdfImportProfile.tenant_id == tenant.id).first()
+
+
+@router.put("/tenants/{tenant_slug}/pdf-profile", response_model=PdfProfileOut)
+def save_pdf_profile(
+    tenant_slug: str,
+    payload: PdfProfileIn,
+    db: Session = Depends(get_db),
+    platform_user: PlatformUser = Depends(get_current_platform_user),
+):
+    tenant = db.query(Tenant).filter(Tenant.slug == tenant_slug).first()
+    if tenant is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Cooperativa no encontrada")
+    if "numero_socio" not in payload.field_patterns:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El perfil debe incluir un patrón para 'numero_socio'")
+
+    profile = db.query(PdfImportProfile).filter(PdfImportProfile.tenant_id == tenant.id).first()
+    if profile is None:
+        profile = PdfImportProfile(tenant_id=tenant.id, field_patterns=payload.field_patterns)
+        db.add(profile)
+    else:
+        profile.field_patterns = payload.field_patterns
+    db.commit()
+    db.refresh(profile)
+    log_action(
+        db, tenant, platform_user, "pdf_profile.saved",
+        target=f"tenant:{tenant.id}", details=f"fields={sorted(payload.field_patterns)}",
+        actor_type="platform",
+    )
+    return profile

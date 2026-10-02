@@ -123,6 +123,35 @@ class PlatformLogin(BaseModel):
     password: str
 
 
+class PdfProfileIn(BaseModel):
+    field_patterns: dict[str, str]
+
+
+class PdfProfileOut(BaseModel):
+    tenant_id: int
+    field_patterns: dict[str, str]
+    updated_at: dt.datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PdfProfilePreviewPage(BaseModel):
+    page: int
+    raw_text: str
+    fields: dict[str, str | None]
+
+
+class PdfImportJobOut(BaseModel):
+    id: int
+    status: str
+    total_pages: int
+    processed_pages: int
+    error: str | None
+    import_batch_id: int | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class TenantSummary(BaseModel):
     id: int
     slug: str

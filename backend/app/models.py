@@ -6,6 +6,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    JSON,
     Numeric,
     String,
     UniqueConstraint,
@@ -144,6 +145,52 @@ class Invoice(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     member: Mapped[Member] = relationship(back_populates="invoices")
+
+
+class PdfImportProfile(Base):
+    """Per-tenant recipe for parsing socios out of PDF boletas: a regex (one
+    capture group) per field, e.g. {"numero_socio": "N° Socio:\\s*(\\d+)"}.
+    Every cooperativa's PDF layout is different, so this is authored by a
+    platform dev via /api/dev after testing it against a sample PDF — tenant
+    admins only ever consume it (import-pdf), never edit it. One profile per
+    tenant."""
+
+    __tablename__ = "pdf_import_profiles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), unique=True)
+    field_patterns: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow
+    )
+
+    tenant: Mapped[Tenant] = relationship()
+
+
+class PdfImportJob(Base):
+    """Progress tracker for a PDF import running in the background (a
+    cooperativa's boletas can run thousands of pages across several sector
+    PDFs, so the admin panel polls this instead of blocking the upload
+    request)."""
+
+    __tablename__ = "pdf_import_jobs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    period_year: Mapped[int]
+    period_month: Mapped[int]
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|processing|done|error
+    total_pages: Mapped[int] = mapped_column(default=0)
+    processed_pages: Mapped[int] = mapped_column(default=0)
+    error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("import_batches.id"), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow
+    )
+
+    tenant: Mapped[Tenant] = relationship()
 
 
 class AuditLog(Base):

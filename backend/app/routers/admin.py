@@ -1,6 +1,6 @@
 import datetime as dt
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -8,7 +8,7 @@ from app.auth import create_access_token, get_current_admin, hash_password, requ
 from app.config import settings
 from app.database import get_db
 from app.deps import get_tenant
-from app.models import AdminUser, AuditLog, Gestor, Invoice, Member, Meter, Reading, Tenant
+from app.models import AdminUser, AuditLog, Gestor, Invoice, Member, Meter, PdfImportJob, Reading, Tenant
 from app.rate_limit import limiter
 from app.schemas import (
     AdminCreate,
@@ -29,6 +29,7 @@ from app.schemas import (
     MeterOut,
     MpConnectUrlOut,
     MpStatusOut,
+    PdfImportJobOut,
     ReadingOut,
     TenantSettingsOut,
     TenantSettingsUpdate,
@@ -38,6 +39,7 @@ from app.schemas import (
 from app.services.audit import log_action
 from app.services.importer import ImportError_, import_spreadsheet
 from app.services.mercadopago import MercadoPagoError, build_authorize_url, disconnect_tenant
+from app.services.pdf_importer import run_pdf_import_job
 from app.services.storage import UnsupportedLogoType, delete_logo, upload_logo
 
 router = APIRouter(prefix="/api/t/{tenant_slug}/admin", tags=["admin"])
@@ -94,6 +96,46 @@ async def import_members(
         members_created=created,
         members_updated=updated,
     )
+
+
+@router.post("/import-pdf", response_model=PdfImportJobOut)
+async def import_members_pdf(
+    tenant_slug: str,
+    background_tasks: BackgroundTasks,
+    period_year: int = Form(...),
+    period_month: int = Form(...),
+    files: list[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    """Import socios from one or more PDFs (one page = one socio), using the
+    extraction profile a Coopera dev configured for this cooperativa via the
+    /api/dev panel. Runs in the background — poll /import-pdf/status/{id}."""
+    tenant = get_tenant(tenant_slug, db)
+
+    contents = [(f.filename or "boleta.pdf", await f.read()) for f in files]
+
+    job = PdfImportJob(tenant_id=tenant.id, period_year=period_year, period_month=period_month)
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    background_tasks.add_task(run_pdf_import_job, job.id, contents)
+    return job
+
+
+@router.get("/import-pdf/status/{job_id}", response_model=PdfImportJobOut)
+def import_pdf_status(
+    tenant_slug: str,
+    job_id: int,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    job = db.query(PdfImportJob).filter(PdfImportJob.id == job_id, PdfImportJob.tenant_id == tenant.id).first()
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job no encontrado")
+    return job
 
 
 @router.get("/members", response_model=list[MemberRow])

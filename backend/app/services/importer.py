@@ -82,19 +82,20 @@ def _clean_date(value) -> dt.date | None:
     return None
 
 
-def import_spreadsheet(
+def upsert_rows(
     db: Session,
     tenant: Tenant,
     filename: str,
-    content: bytes,
+    rows: list[dict],
     period_year: int,
     period_month: int,
 ) -> tuple[ImportBatch, int, int]:
-    headers, rows = _read_rows(filename, content)
-
-    missing = REQUIRED_COLUMNS - set(headers)
-    if missing:
-        raise ImportError_(f"Faltan columnas requeridas: {', '.join(sorted(missing))}")
+    """Shared by every import source (CSV/XLSX, PDF, ...): each row is a dict
+    keyed by the same field names as REQUIRED_COLUMNS plus optional
+    'vencimiento'. A key *absent* from a row (as opposed to present but
+    empty) means "this source couldn't tell us" and leaves the existing
+    member/invoice value untouched instead of blanking it out — PDF profiles
+    in particular may only extract a subset of fields per page."""
 
     batch = ImportBatch(
         tenant_id=tenant.id,
@@ -113,11 +114,6 @@ def import_spreadsheet(
         numero_socio = _clean_str(row.get("numero_socio"))
         if not numero_socio:
             continue
-        nombre = _clean_str(row.get("nombre"))
-        identificador = _clean_str(row.get("identificador"))
-        consumo = _clean_float(row.get("consumo"))
-        monto = _clean_float(row.get("monto"))
-        vencimiento = _clean_date(row.get("vencimiento"))
 
         member = (
             db.query(Member)
@@ -128,15 +124,17 @@ def import_spreadsheet(
             member = Member(
                 tenant_id=tenant.id,
                 numero_socio=numero_socio,
-                nombre=nombre,
-                identificador=identificador,
+                nombre=_clean_str(row.get("nombre")),
+                identificador=_clean_str(row.get("identificador")),
             )
             db.add(member)
             db.flush()
             created += 1
         else:
-            member.nombre = nombre
-            member.identificador = identificador
+            if row.get("nombre") is not None:
+                member.nombre = _clean_str(row.get("nombre"))
+            if row.get("identificador") is not None:
+                member.identificador = _clean_str(row.get("identificador"))
             updated += 1
 
         invoice = (
@@ -158,11 +156,31 @@ def import_spreadsheet(
             )
             db.add(invoice)
 
-        invoice.consumo = consumo
-        invoice.monto = monto
-        invoice.vencimiento = vencimiento
+        if row.get("consumo") is not None:
+            invoice.consumo = _clean_float(row.get("consumo"))
+        if row.get("monto") is not None:
+            invoice.monto = _clean_float(row.get("monto"))
+        if row.get("vencimiento") is not None:
+            invoice.vencimiento = _clean_date(row.get("vencimiento"))
         invoice.import_batch_id = batch.id
 
     db.commit()
     db.refresh(batch)
     return batch, created, updated
+
+
+def import_spreadsheet(
+    db: Session,
+    tenant: Tenant,
+    filename: str,
+    content: bytes,
+    period_year: int,
+    period_month: int,
+) -> tuple[ImportBatch, int, int]:
+    headers, rows = _read_rows(filename, content)
+
+    missing = REQUIRED_COLUMNS - set(headers)
+    if missing:
+        raise ImportError_(f"Faltan columnas requeridas: {', '.join(sorted(missing))}")
+
+    return upsert_rows(db, tenant, filename, rows, period_year, period_month)

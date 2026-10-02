@@ -9,6 +9,7 @@ python-jose[cryptography]
 bcrypt
 python-multipart
 openpyxl
+pypdf
 reportlab
 boto3
 httpx

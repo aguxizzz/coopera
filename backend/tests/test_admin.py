@@ -1,6 +1,8 @@
 import io
 
-from app.models import AdminUser
+from sqlalchemy.orm import sessionmaker
+
+from app.models import AdminUser, PdfImportProfile
 
 
 def test_login_success(client, tenant, admin):
@@ -62,6 +64,67 @@ def test_import_members_rejects_bad_extension(client, tenant, admin_headers):
         files={"file": ("socios.txt", io.BytesIO(b"junk"), "text/plain")},
     )
     assert resp.status_code == 400
+
+
+def _sample_pdf_bytes():
+    from reportlab.pdfgen import canvas
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf)
+    c.drawString(50, 750, "N. Socio: 1001")
+    c.drawString(50, 700, "Total $4,500.00")
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+def test_import_members_pdf(client, db_session, tenant, admin_headers, monkeypatch):
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=db_session.get_bind())
+    monkeypatch.setattr("app.services.pdf_importer.SessionLocal", TestingSessionLocal)
+
+    db_session.add(
+        PdfImportProfile(
+            tenant_id=tenant.id,
+            field_patterns={
+                "numero_socio": r"N\. Socio:\s*(\d+)",
+                "monto": r"\$([0-9,]+\.[0-9]{2})",
+            },
+        )
+    )
+    db_session.commit()
+
+    resp = client.post(
+        f"/api/t/{tenant.slug}/admin/import-pdf",
+        headers=admin_headers,
+        data={"period_year": 2026, "period_month": 1},
+        files=[("files", ("sector1.pdf", _sample_pdf_bytes(), "application/pdf"))],
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["id"]
+
+    resp = client.get(f"/api/t/{tenant.slug}/admin/import-pdf/status/{job_id}", headers=admin_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "done"
+    assert body["total_pages"] == 1
+    assert body["import_batch_id"] is not None
+
+
+def test_import_members_pdf_without_profile(client, tenant, admin_headers, monkeypatch, db_session):
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=db_session.get_bind())
+    monkeypatch.setattr("app.services.pdf_importer.SessionLocal", TestingSessionLocal)
+
+    resp = client.post(
+        f"/api/t/{tenant.slug}/admin/import-pdf",
+        headers=admin_headers,
+        data={"period_year": 2026, "period_month": 1},
+        files=[("files", ("sector1.pdf", _sample_pdf_bytes(), "application/pdf"))],
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["id"]
+
+    resp = client.get(f"/api/t/{tenant.slug}/admin/import-pdf/status/{job_id}", headers=admin_headers)
+    assert resp.json()["status"] == "error"
 
 
 def test_list_members_includes_saldo(client, tenant, admin_headers, member, invoice):
