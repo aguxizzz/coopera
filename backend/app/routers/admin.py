@@ -8,7 +8,7 @@ from app.auth import create_access_token, get_current_admin, hash_password, requ
 from app.config import settings
 from app.database import get_db
 from app.deps import get_tenant
-from app.models import AdminUser, AuditLog, Invoice, Member, Tenant
+from app.models import AdminUser, AuditLog, Gestor, Invoice, Member, Meter, Reading, Tenant
 from app.rate_limit import limiter
 from app.schemas import (
     AdminCreate,
@@ -19,11 +19,17 @@ from app.schemas import (
     AuditLogOut,
     DeleteMembersRequest,
     DeleteMembersResult,
+    GestorActivoUpdate,
+    GestorCreate,
+    GestorOut,
     ImportResult,
     InvoiceOut,
     MemberRow,
+    MeterCreate,
+    MeterOut,
     MpConnectUrlOut,
     MpStatusOut,
+    ReadingOut,
     TenantSettingsOut,
     TenantSettingsUpdate,
     TokenResponse,
@@ -482,5 +488,160 @@ def get_audit_log(
         .filter(AuditLog.tenant_id == tenant.id)
         .order_by(AuditLog.created_at.desc())
         .limit(200)
+        .all()
+    )
+
+
+# --- Gestores de consumos (lectores de medidores) --------------------------
+
+
+@router.get("/gestores", response_model=list[GestorOut])
+def list_gestores(
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    return db.query(Gestor).filter(Gestor.tenant_id == tenant.id).order_by(Gestor.nombre).all()
+
+
+@router.post("/gestores", response_model=GestorOut)
+def create_gestor(
+    tenant_slug: str,
+    payload: GestorCreate,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    if db.query(Gestor).filter(Gestor.tenant_id == tenant.id, Gestor.email == payload.email).first():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Ya existe un gestor con ese email")
+
+    gestor = Gestor(
+        tenant_id=tenant.id,
+        nombre=payload.nombre,
+        email=payload.email,
+        hashed_password=hash_password(payload.password),
+    )
+    db.add(gestor)
+    db.commit()
+    db.refresh(gestor)
+    log_action(db, tenant, admin, "gestor.created", target=f"gestor:{gestor.id}", details=f"email={gestor.email}")
+    return gestor
+
+
+@router.patch("/gestores/{gestor_id}/activo", response_model=GestorOut)
+def update_gestor_activo(
+    tenant_slug: str,
+    gestor_id: int,
+    payload: GestorActivoUpdate,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    gestor = db.query(Gestor).filter(Gestor.id == gestor_id, Gestor.tenant_id == tenant.id).first()
+    if gestor is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Gestor no encontrado")
+    gestor.activo = payload.activo
+    db.commit()
+    db.refresh(gestor)
+    log_action(db, tenant, admin, "gestor.activo_updated", target=f"gestor:{gestor.id}", details=f"activo={payload.activo}")
+    return gestor
+
+
+# --- Medidores y lecturas ---------------------------------------------------
+
+
+@router.get("/meters", response_model=list[MeterOut])
+def list_meters(
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    meters = db.query(Meter).filter(Meter.tenant_id == tenant.id).order_by(Meter.codigo).all()
+
+    rows = []
+    for meter in meters:
+        last = (
+            db.query(Reading)
+            .filter(Reading.meter_id == meter.id)
+            .order_by(Reading.created_at.desc())
+            .first()
+        )
+        rows.append(
+            MeterOut(
+                id=meter.id,
+                codigo=meter.codigo,
+                tipo=meter.tipo,
+                direccion=meter.direccion,
+                unidad=meter.unidad,
+                activo=meter.activo,
+                member_id=meter.member_id,
+                numero_socio=meter.member.numero_socio,
+                nombre_socio=meter.member.nombre,
+                ultima_lectura=last.valor if last else None,
+                ultima_lectura_fecha=last.created_at if last else None,
+                ultima_lectura_anomala=last.anomala if last else False,
+            )
+        )
+    return rows
+
+
+@router.post("/meters", response_model=MeterOut)
+def create_meter(
+    tenant_slug: str,
+    payload: MeterCreate,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    member = db.query(Member).filter(Member.id == payload.member_id, Member.tenant_id == tenant.id).first()
+    if member is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Socio no encontrado")
+    if db.query(Meter).filter(Meter.tenant_id == tenant.id, Meter.codigo == payload.codigo).first():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Ya existe un medidor con ese código")
+
+    meter = Meter(
+        tenant_id=tenant.id,
+        member_id=member.id,
+        codigo=payload.codigo,
+        tipo=payload.tipo,
+        direccion=payload.direccion,
+        unidad=payload.unidad,
+    )
+    db.add(meter)
+    db.commit()
+    db.refresh(meter)
+    log_action(db, tenant, admin, "meter.created", target=f"meter:{meter.id}", details=f"codigo={meter.codigo}")
+    return MeterOut(
+        id=meter.id,
+        codigo=meter.codigo,
+        tipo=meter.tipo,
+        direccion=meter.direccion,
+        unidad=meter.unidad,
+        activo=meter.activo,
+        member_id=meter.member_id,
+        numero_socio=member.numero_socio,
+        nombre_socio=member.nombre,
+        ultima_lectura=None,
+        ultima_lectura_fecha=None,
+    )
+
+
+@router.get("/meters/{meter_id}/readings", response_model=list[ReadingOut])
+def list_meter_readings(
+    tenant_slug: str,
+    meter_id: int,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    meter = db.query(Meter).filter(Meter.id == meter_id, Meter.tenant_id == tenant.id).first()
+    if meter is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Medidor no encontrado")
+    return (
+        db.query(Reading)
+        .filter(Reading.meter_id == meter.id)
+        .order_by(Reading.created_at.desc())
         .all()
     )

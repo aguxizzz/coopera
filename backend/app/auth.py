@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.deps import get_tenant
-from app.models import AdminUser, PlatformUser, Tenant
+from app.models import AdminUser, Gestor, PlatformUser, Tenant
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -45,6 +45,12 @@ def create_access_token(admin_id: int, tenant_id: int) -> str:
 def create_platform_token(platform_user_id: int) -> str:
     expire = dt.datetime.utcnow() + dt.timedelta(minutes=settings.jwt_expire_minutes)
     payload = {"sub": str(platform_user_id), "platform": True, "exp": expire}
+    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+
+
+def create_gestor_token(gestor_id: int, tenant_id: int) -> str:
+    expire = dt.datetime.utcnow() + dt.timedelta(minutes=settings.jwt_expire_minutes)
+    payload = {"sub": str(gestor_id), "tenant_id": tenant_id, "gestor": True, "exp": expire}
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
@@ -91,6 +97,26 @@ def get_current_admin(
     if admin is None or admin.tenant_id != tenant.id:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Usuario no encontrado")
     return admin
+
+
+def get_current_gestor(
+    tenant_slug: str,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+) -> Gestor:
+    tenant = get_tenant(tenant_slug, db)
+    payload = _decode(credentials)
+    if not payload.get("gestor"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Token no es de un gestor")
+    if payload.get("tenant_id") != tenant.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Token no corresponde a esta cooperativa")
+
+    gestor = db.get(Gestor, int(payload["sub"]))
+    if gestor is None or gestor.tenant_id != tenant.id:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Usuario no encontrado")
+    if not gestor.activo:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Gestor inactivo")
+    return gestor
 
 
 def require_owner(admin: AdminUser = Depends(get_current_admin)) -> AdminUser:

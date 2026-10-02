@@ -6,10 +6,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.auth import create_access_token, create_platform_token, hash_password
+from app.auth import create_access_token, create_gestor_token, create_platform_token, hash_password
 from app.database import Base, get_db
 from app.main import app
-from app.models import AdminUser, ImportBatch, Invoice, Member, PlatformUser, Tenant
+from app.models import AdminUser, Gestor, ImportBatch, Invoice, Member, Meter, PlatformUser, Tenant
 from app.rate_limit import limiter
 
 
@@ -106,6 +106,39 @@ def member(db_session, tenant):
         identificador="30111222",
         email="juana@example.com",
     )
+    db_session.add(m)
+    db_session.commit()
+    db_session.refresh(m)
+    return m
+
+
+@pytest.fixture()
+def gestor(db_session, tenant):
+    g = Gestor(
+        tenant_id=tenant.id,
+        nombre="Carlos Gestor",
+        email="carlos@coopera.test",
+        hashed_password=hash_password("gestorsecret"),
+    )
+    db_session.add(g)
+    db_session.commit()
+    db_session.refresh(g)
+    return g
+
+
+@pytest.fixture()
+def gestor_token(gestor):
+    return create_gestor_token(gestor.id, gestor.tenant_id)
+
+
+@pytest.fixture()
+def gestor_headers(gestor_token):
+    return {"Authorization": f"Bearer {gestor_token}"}
+
+
+@pytest.fixture()
+def meter(db_session, tenant, member):
+    m = Meter(tenant_id=tenant.id, member_id=member.id, codigo="MED-001", tipo="luz")
     db_session.add(m)
     db_session.commit()
     db_session.refresh(m)

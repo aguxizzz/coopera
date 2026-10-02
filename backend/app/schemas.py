@@ -166,6 +166,75 @@ class AdminRoleUpdate(BaseModel):
     role: Literal["owner", "staff"]
 
 
+class GestorLogin(BaseModel):
+    email: str
+    password: str
+
+
+class GestorOut(BaseModel):
+    id: int
+    nombre: str
+    email: str
+    activo: bool
+    created_at: dt.datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class GestorCreate(BaseModel):
+    nombre: str
+    email: str
+    password: str
+
+
+class GestorActivoUpdate(BaseModel):
+    activo: bool
+
+
+class MeterOut(BaseModel):
+    id: int
+    codigo: str
+    tipo: str
+    direccion: str | None
+    unidad: str
+    activo: bool
+    member_id: int
+    numero_socio: str
+    nombre_socio: str
+    ultima_lectura: float | None
+    ultima_lectura_fecha: dt.datetime | None
+    ultima_lectura_anomala: bool = False
+
+
+class MeterCreate(BaseModel):
+    member_id: int
+    codigo: str
+    tipo: Literal["luz", "agua", "gas"] = "luz"
+    direccion: str | None = None
+    unidad: str = "kWh"
+
+
+class ReadingCreate(BaseModel):
+    valor: float
+    lat: float | None = None
+    lon: float | None = None
+    ocr_valor: str | None = None
+    ocr_confianza: float | None = None
+
+
+class ReadingOut(BaseModel):
+    id: int
+    meter_id: int
+    valor: float
+    valor_anterior: float | None
+    consumo: float | None
+    foto_url: str | None
+    anomala: bool
+    created_at: dt.datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class AuditLogOut(BaseModel):
     id: int
     actor_type: str

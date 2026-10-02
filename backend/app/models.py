@@ -4,6 +4,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Numeric,
     String,
@@ -97,6 +98,7 @@ class Member(Base):
 
     tenant: Mapped[Tenant] = relationship(back_populates="members")
     invoices: Mapped[list["Invoice"]] = relationship(back_populates="member", cascade="all, delete-orphan")
+    meters: Mapped[list["Meter"]] = relationship(back_populates="member", cascade="all, delete-orphan")
 
 
 class ImportBatch(Base):
@@ -160,3 +162,82 @@ class AuditLog(Base):
     target: Mapped[str | None] = mapped_column(String(255), nullable=True)
     details: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, index=True)
+
+
+class Gestor(Base):
+    """A meter reader (empleado de la cooperativa que recorre el pueblo con la
+    app). Separate from AdminUser on purpose: a gestor only ever needs the
+    reading-capture endpoints, never the admin panel, so keeping it a
+    distinct principal means we never have to remember to gate every admin
+    route against this role."""
+
+    __tablename__ = "gestores"
+    __table_args__ = (UniqueConstraint("tenant_id", "email", name="uq_gestor_tenant_email"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    nombre: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str] = mapped_column(String(255))
+    hashed_password: Mapped[str] = mapped_column(String(255))
+    activo: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    tenant: Mapped[Tenant] = relationship()
+
+
+class Meter(Base):
+    """A medidor (luz, agua o gas) asociado a un socio. Un socio puede tener
+    más de uno (ej: varias propiedades)."""
+
+    __tablename__ = "meters"
+    __table_args__ = (UniqueConstraint("tenant_id", "codigo", name="uq_meter_tenant_codigo"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id"))
+    codigo: Mapped[str] = mapped_column(String(64))  # número de medidor
+    tipo: Mapped[str] = mapped_column(String(16), default="luz")  # luz | agua | gas
+    direccion: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    unidad: Mapped[str] = mapped_column(String(16), default="kWh")
+    activo: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    member: Mapped[Member] = relationship(back_populates="meters")
+    readings: Mapped[list["Reading"]] = relationship(back_populates="meter", cascade="all, delete-orphan")
+
+
+class Reading(Base):
+    """One lectura capturada por un gestor (o cargada manualmente por un
+    admin). `valor_anterior`/`consumo` quedan desnormalizados en el momento
+    de la carga para no tener que recalcular el historial cada vez que se
+    muestra una lectura, y porque son el valor que de verdad importa
+    auditar si un socio reclama una factura."""
+
+    __tablename__ = "readings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    meter_id: Mapped[int] = mapped_column(ForeignKey("meters.id"), index=True)
+    gestor_id: Mapped[int | None] = mapped_column(ForeignKey("gestores.id"), nullable=True)
+
+    valor: Mapped[float] = mapped_column(Float)
+    valor_anterior: Mapped[float | None] = mapped_column(Float, nullable=True)
+    consumo: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    foto_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ocr_valor: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ocr_confianza: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lon: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Marcada automáticamente cuando el consumo se sale de rango (negativo o
+    # salto anormal respecto del historial). El gestor puede seguir
+    # guardando la lectura igual; esto sólo la deja señalada para que un
+    # admin la revise antes de facturar.
+    anomala: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, index=True)
+
+    meter: Mapped[Meter] = relationship(back_populates="readings")
+    gestor: Mapped[Gestor | None] = relationship()

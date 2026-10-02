@@ -60,6 +60,39 @@ def upload_logo(tenant_slug: str, kind: str, filename: str, content_type: str, d
     return f"{base}/static/{key}"
 
 
+READING_PHOTO_CONTENT_TYPES = {"image/png", "image/jpeg", "image/webp"}
+
+
+class UnsupportedPhotoType(Exception):
+    pass
+
+
+def upload_reading_photo(tenant_slug: str, filename: str, content_type: str, data: bytes) -> str:
+    if content_type not in READING_PHOTO_CONTENT_TYPES:
+        raise UnsupportedPhotoType(f"Formato no soportado: {content_type}")
+
+    ext = _extension_for(filename, content_type)
+    key = f"lecturas/{tenant_slug}/{uuid.uuid4().hex}{ext}"
+
+    if settings.r2_configured:
+        client = _r2_client()
+        client.put_object(
+            Bucket=settings.r2_bucket_name,
+            Key=key,
+            Body=data,
+            ContentType=content_type,
+        )
+        base = (settings.r2_public_base_url or "").rstrip("/")
+        return f"{base}/{key}"
+
+    dest_path = os.path.join(settings.upload_dir, key)
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    with open(dest_path, "wb") as f:
+        f.write(data)
+    base = settings.public_base_url.rstrip("/")
+    return f"{base}/static/{key}"
+
+
 def delete_logo(url: str) -> None:
     """Best-effort delete of a previously stored logo, given the URL that was
     returned by `upload_logo`. Silently does nothing if the URL doesn't point
