@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.auth import create_gestor_token, get_current_gestor, verify_password
@@ -6,6 +6,7 @@ from app.config import settings
 from app.database import get_db
 from app.deps import get_tenant
 from app.models import Gestor, Meter, Reading
+from app.rate_limit import limiter
 from app.schemas import GestorLogin, MeterOut, ReadingOut, TokenResponse
 from app.services.readings import register_reading
 from app.services.storage import UnsupportedPhotoType, upload_reading_photo
@@ -35,7 +36,8 @@ router = APIRouter(prefix="/api/t/{tenant_slug}/gestor", tags=["gestor"])
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(tenant_slug: str, payload: GestorLogin, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def login(request: Request, tenant_slug: str, payload: GestorLogin, db: Session = Depends(get_db)):
     tenant = get_tenant(tenant_slug, db)
     gestor = (
         db.query(Gestor)

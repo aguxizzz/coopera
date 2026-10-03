@@ -10,6 +10,21 @@ def test_gestor_login_success(client, tenant, gestor):
     assert resp.json()["access_token"]
 
 
+def test_gestor_login_is_rate_limited(client, tenant, gestor):
+    for _ in range(5):
+        resp = client.post(
+            f"/api/t/{tenant.slug}/gestor/login",
+            json={"email": gestor.email, "password": "wrong"},
+        )
+        assert resp.status_code == 401
+
+    resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/login",
+        json={"email": gestor.email, "password": "wrong"},
+    )
+    assert resp.status_code == 429
+
+
 def test_gestor_login_wrong_password(client, tenant, gestor):
     resp = client.post(
         f"/api/t/{tenant.slug}/gestor/login",
