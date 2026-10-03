@@ -2,12 +2,34 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from sqlalchemy.orm import Session
 
 from app.auth import create_gestor_token, get_current_gestor, verify_password
+from app.config import settings
 from app.database import get_db
 from app.deps import get_tenant
 from app.models import Gestor, Meter, Reading
 from app.schemas import GestorLogin, MeterOut, ReadingOut, TokenResponse
 from app.services.readings import register_reading
 from app.services.storage import UnsupportedPhotoType, upload_reading_photo
+
+_UPLOAD_CHUNK_SIZE = 1024 * 1024
+
+
+async def _read_capped(upload: UploadFile, max_bytes: int) -> bytes:
+    """Reads an UploadFile in chunks, bailing out as soon as it exceeds
+    max_bytes instead of buffering an unbounded body into memory first."""
+    chunks = []
+    total = 0
+    while True:
+        chunk = await upload.read(_UPLOAD_CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status.HTTP_413_CONTENT_TOO_LARGE,
+                f"La foto supera el tamaño máximo permitido ({max_bytes // (1024 * 1024)} MB)",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 router = APIRouter(prefix="/api/t/{tenant_slug}/gestor", tags=["gestor"])
 
@@ -97,7 +119,7 @@ async def create_reading(
 
     foto_url = None
     if foto is not None:
-        content = await foto.read()
+        content = await _read_capped(foto, settings.max_reading_photo_bytes)
         try:
             foto_url = upload_reading_photo(
                 tenant.slug, foto.filename or "lectura.jpg", foto.content_type or "", content

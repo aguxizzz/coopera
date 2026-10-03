@@ -67,11 +67,25 @@ class UnsupportedPhotoType(Exception):
     pass
 
 
+def _sniff_image_type(data: bytes) -> str | None:
+    """Identify the real format from the file's magic bytes. The client's
+    Content-Type header is just a string it sends us and is trivial to
+    spoof, so it must never be the thing that decides what we accept."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 def upload_reading_photo(tenant_slug: str, filename: str, content_type: str, data: bytes) -> str:
-    if content_type not in READING_PHOTO_CONTENT_TYPES:
+    sniffed_type = _sniff_image_type(data)
+    if sniffed_type is None or sniffed_type not in READING_PHOTO_CONTENT_TYPES:
         raise UnsupportedPhotoType(f"Formato no soportado: {content_type}")
 
-    ext = _extension_for(filename, content_type)
+    ext = _extension_for(filename, sniffed_type)
     key = f"lecturas/{tenant_slug}/{uuid.uuid4().hex}{ext}"
 
     if settings.r2_configured:
@@ -80,7 +94,7 @@ def upload_reading_photo(tenant_slug: str, filename: str, content_type: str, dat
             Bucket=settings.r2_bucket_name,
             Key=key,
             Body=data,
-            ContentType=content_type,
+            ContentType=sniffed_type,
         )
         base = (settings.r2_public_base_url or "").rstrip("/")
         return f"{base}/{key}"

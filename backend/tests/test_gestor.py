@@ -1,3 +1,6 @@
+from app.config import settings
+
+
 def test_gestor_login_success(client, tenant, gestor):
     resp = client.post(
         f"/api/t/{tenant.slug}/gestor/login",
@@ -156,3 +159,38 @@ def test_admin_can_deactivate_gestor(client, tenant, admin_headers, gestor):
     )
     assert resp.status_code == 200
     assert resp.json()["activo"] is False
+
+
+def test_create_reading_accepts_real_jpeg_photo(client, tenant, gestor_headers, meter):
+    resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings",
+        headers=gestor_headers,
+        data={"valor": 100},
+        files={"foto": ("lectura.jpg", b"\xff\xd8\xff" + b"0" * 50, "image/jpeg")},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["foto_url"]
+
+
+def test_create_reading_rejects_spoofed_content_type(client, tenant, gestor_headers, meter):
+    """The client claims image/jpeg but the bytes aren't actually a JPEG
+    (or any supported format) — must be rejected based on real content,
+    not the client-supplied header."""
+    resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings",
+        headers=gestor_headers,
+        data={"valor": 100},
+        files={"foto": ("lectura.jpg", b"not-actually-an-image", "image/jpeg")},
+    )
+    assert resp.status_code == 400
+
+
+def test_create_reading_rejects_oversized_photo(client, tenant, gestor_headers, meter, monkeypatch):
+    monkeypatch.setattr(settings, "max_reading_photo_bytes", 10)
+    resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings",
+        headers=gestor_headers,
+        data={"valor": 100},
+        files={"foto": ("lectura.jpg", b"\xff\xd8\xff" + b"0" * 100, "image/jpeg")},
+    )
+    assert resp.status_code == 413

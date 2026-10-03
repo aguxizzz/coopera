@@ -42,6 +42,11 @@ class Settings(BaseSettings):
 
     upload_dir: str = "uploads"
 
+    # Hard cap on reading-photo uploads from the gestor mobile app, enforced
+    # while streaming the body in (see routers/gestor.py) so an oversized or
+    # unbounded upload can't be buffered fully into memory first.
+    max_reading_photo_bytes: int = 8 * 1024 * 1024
+
     class Config:
         env_file = ".env"
 
