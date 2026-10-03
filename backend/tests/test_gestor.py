@@ -2,22 +2,84 @@ from app.config import settings
 from app.models import Tenant
 
 
-def test_gestor_login_success(client, tenant, gestor):
-    resp = client.post(
-        f"/api/t/{tenant.slug}/gestor/login",
-        json={"email": gestor.email, "password": "gestorsecret"},
+def _device_login(client, tenant_slug, password="gestorsecret"):
+    return client.post(
+        f"/api/t/{tenant_slug}/gestor/device-login",
+        json={"password": password},
     )
+
+
+def _select_profile(client, tenant_slug, device_token, gestor_id):
+    return client.post(
+        f"/api/t/{tenant_slug}/gestor/select-profile",
+        json={"device_token": device_token, "gestor_id": gestor_id},
+    )
+
+
+def _login(client, tenant_slug, gestor_id, password="gestorsecret"):
+    device_token = _device_login(client, tenant_slug, password).json()["device_token"]
+    return _select_profile(client, tenant_slug, device_token, gestor_id)
+
+
+def test_gestor_device_login_lists_active_profiles(client, tenant, gestor):
+    resp = _device_login(client, tenant.slug)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["device_token"]
+    assert body["profiles"] == [{"id": gestor.id, "nombre": gestor.nombre}]
+
+
+def test_gestor_device_login_wrong_password(client, tenant, gestor):
+    resp = _device_login(client, tenant.slug, password="wrong")
+    assert resp.status_code == 401
+
+
+def test_gestor_device_login_without_shared_password_configured(client, tenant, db_session):
+    tenant.gestor_shared_password_hash = None
+    db_session.commit()
+    resp = _device_login(client, tenant.slug)
+    assert resp.status_code == 401
+
+
+def test_gestor_select_profile_success(client, tenant, gestor):
+    resp = _login(client, tenant.slug, gestor.id)
     assert resp.status_code == 200
     body = resp.json()
     assert body["access_token"]
     assert body["refresh_token"]
 
 
+def test_gestor_select_profile_rejects_invalid_device_token(client, tenant, gestor):
+    resp = _select_profile(client, tenant.slug, "not-a-real-token", gestor.id)
+    assert resp.status_code == 401
+
+
+def test_gestor_select_profile_rejects_unknown_gestor(client, tenant, gestor):
+    device_token = _device_login(client, tenant.slug).json()["device_token"]
+    resp = _select_profile(client, tenant.slug, device_token, 999)
+    assert resp.status_code == 404
+
+
+def test_gestor_select_profile_rejects_inactive_gestor(client, tenant, gestor, db_session):
+    device_token = _device_login(client, tenant.slug).json()["device_token"]
+    gestor.activo = False
+    db_session.commit()
+    resp = _select_profile(client, tenant.slug, device_token, gestor.id)
+    assert resp.status_code == 403
+
+
+def test_gestor_select_profile_rejects_device_token_from_other_tenant(client, tenant, gestor, db_session):
+    other_tenant = Tenant(slug="otra-coopera-device-test", name="Otra Cooperativa")
+    db_session.add(other_tenant)
+    db_session.commit()
+
+    device_token = _device_login(client, tenant.slug).json()["device_token"]
+    resp = _select_profile(client, other_tenant.slug, device_token, gestor.id)
+    assert resp.status_code == 401
+
+
 def test_gestor_refresh_issues_new_access_token(client, tenant, gestor):
-    login_resp = client.post(
-        f"/api/t/{tenant.slug}/gestor/login",
-        json={"email": gestor.email, "password": "gestorsecret"},
-    )
+    login_resp = _login(client, tenant.slug, gestor.id)
     refresh_token = login_resp.json()["refresh_token"]
 
     resp = client.post(
@@ -38,10 +100,7 @@ def test_gestor_refresh_issues_new_access_token(client, tenant, gestor):
 
 
 def test_gestor_refresh_rotates_token_invalidating_the_old_one(client, tenant, gestor):
-    login_resp = client.post(
-        f"/api/t/{tenant.slug}/gestor/login",
-        json={"email": gestor.email, "password": "gestorsecret"},
-    )
+    login_resp = _login(client, tenant.slug, gestor.id)
     old_refresh_token = login_resp.json()["refresh_token"]
 
     client.post(f"/api/t/{tenant.slug}/gestor/refresh", json={"refresh_token": old_refresh_token})
@@ -60,10 +119,7 @@ def test_gestor_refresh_rejects_unknown_token(client, tenant, gestor):
 
 
 def test_gestor_refresh_rejects_deactivated_gestor(client, tenant, gestor, db_session):
-    login_resp = client.post(
-        f"/api/t/{tenant.slug}/gestor/login",
-        json={"email": gestor.email, "password": "gestorsecret"},
-    )
+    login_resp = _login(client, tenant.slug, gestor.id)
     refresh_token = login_resp.json()["refresh_token"]
 
     gestor.activo = False
@@ -74,10 +130,7 @@ def test_gestor_refresh_rejects_deactivated_gestor(client, tenant, gestor, db_se
 
 
 def test_gestor_refresh_rejects_other_tenants_token(client, tenant, gestor, db_session):
-    login_resp = client.post(
-        f"/api/t/{tenant.slug}/gestor/login",
-        json={"email": gestor.email, "password": "gestorsecret"},
-    )
+    login_resp = _login(client, tenant.slug, gestor.id)
     refresh_token = login_resp.json()["refresh_token"]
 
     other_tenant = Tenant(slug="otra-coopera-test", name="Otra Cooperativa")
@@ -90,27 +143,13 @@ def test_gestor_refresh_rejects_other_tenants_token(client, tenant, gestor, db_s
     assert resp.status_code == 401
 
 
-def test_gestor_login_is_rate_limited(client, tenant, gestor):
+def test_gestor_device_login_is_rate_limited(client, tenant, gestor):
     for _ in range(5):
-        resp = client.post(
-            f"/api/t/{tenant.slug}/gestor/login",
-            json={"email": gestor.email, "password": "wrong"},
-        )
+        resp = _device_login(client, tenant.slug, password="wrong")
         assert resp.status_code == 401
 
-    resp = client.post(
-        f"/api/t/{tenant.slug}/gestor/login",
-        json={"email": gestor.email, "password": "wrong"},
-    )
+    resp = _device_login(client, tenant.slug, password="wrong")
     assert resp.status_code == 429
-
-
-def test_gestor_login_wrong_password(client, tenant, gestor):
-    resp = client.post(
-        f"/api/t/{tenant.slug}/gestor/login",
-        json={"email": gestor.email, "password": "wrong"},
-    )
-    assert resp.status_code == 401
 
 
 def test_gestor_routes_require_auth(client, tenant):
@@ -218,24 +257,32 @@ def test_create_reading_unknown_meter_404(client, tenant, gestor_headers):
     assert resp.status_code == 404
 
 
-def test_inactive_gestor_cannot_login(client, tenant, gestor, db_session):
+def test_inactive_gestor_excluded_from_device_login_profiles(client, tenant, gestor, db_session):
     gestor.activo = False
     db_session.commit()
-    resp = client.post(
-        f"/api/t/{tenant.slug}/gestor/login",
-        json={"email": gestor.email, "password": "gestorsecret"},
+    resp = _device_login(client, tenant.slug)
+    assert resp.status_code == 200
+    assert resp.json()["profiles"] == []
+
+
+def test_admin_can_set_shared_password_and_create_gestor(client, tenant, admin_headers, member):
+    resp = client.put(
+        f"/api/t/{tenant.slug}/admin/gestores/shared-password",
+        headers=admin_headers,
+        json={"password": "nueva-clave-compartida"},
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 204
 
-
-def test_admin_can_create_meter_and_gestor(client, tenant, admin_headers, member):
     resp = client.post(
         f"/api/t/{tenant.slug}/admin/gestores",
         headers=admin_headers,
-        json={"nombre": "Nueva Gestora", "email": "nueva@coopera.test", "password": "secret123"},
+        json={"nombre": "Nueva Gestora", "email": "nueva@coopera.test"},
     )
     assert resp.status_code == 200
     assert resp.json()["activo"] is True
+
+    device_resp = _device_login(client, tenant.slug, password="nueva-clave-compartida")
+    assert device_resp.status_code == 200
 
     resp = client.post(
         f"/api/t/{tenant.slug}/admin/meters",

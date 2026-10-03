@@ -63,6 +63,9 @@ def run():
             db.add(tenant)
             db.flush()
 
+        if tenant.gestor_shared_password_hash is None:
+            tenant.gestor_shared_password_hash = hash_password("gestor123")
+
         if not db.query(AdminUser).filter(AdminUser.tenant_id == tenant.id).first():
             db.add(
                 AdminUser(
@@ -126,7 +129,6 @@ def run():
                     tenant_id=tenant.id,
                     nombre=t["gestor_nombre"],
                     email=t["gestor_email"],
-                    hashed_password=hash_password("gestor123"),
                 )
             )
 
@@ -159,7 +161,8 @@ def run():
     print("Admin login: admin@valleverde.coop / coopera123")
     print("Socio demo: numero_socio=201, identificador=29888777 (valle-verde)")
     print("Dev login: dev@coopera.app / coopera-dev123")
-    print("Gestor demo (app mobile): gestor@valleverde.coop / gestor123 (tenant=valle-verde)")
+    print("Gestor demo (app mobile): clave compartida del dispositivo = gestor123 (tenant=valle-verde)")
+    print(f"  -> elegir perfil '{TENANTS[0]['gestor_nombre']}' tras el device-login")
 
 
 if __name__ == "__main__":

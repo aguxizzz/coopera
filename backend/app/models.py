@@ -37,6 +37,12 @@ class Tenant(Base):
     logo_primary_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     logo_secondary_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
+    # Shared "household" password for the gestor mobile app: one password per
+    # cooperativa (set by an admin), not one per gestor. Null until an admin
+    # sets it, which blocks gestor device-login until then. See
+    # app/routers/gestor.py's /device-login and /select-profile.
+    gestor_shared_password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     # Mercado Pago OAuth "Connect": set once the tenant's admin authorizes
     # Coopera's MP app against their own MP account. Tokens are stored
     # Fernet-encrypted (see app/services/mercadopago.py) and refreshed
@@ -216,7 +222,14 @@ class Gestor(Base):
     app). Separate from AdminUser on purpose: a gestor only ever needs the
     reading-capture endpoints, never the admin panel, so keeping it a
     distinct principal means we never have to remember to gate every admin
-    route against this role."""
+    route against this role.
+
+    Gestores have no credentials of their own: the device logs in with the
+    tenant's shared password (Tenant.gestor_shared_password_hash) and then
+    picks which gestor is reading today, Netflix-profile style. `email` is
+    kept only as a contact/display field. Every reading still records which
+    gestor captured it (Reading.gestor_id), so the audit trail survives the
+    shared login."""
 
     __tablename__ = "gestores"
     __table_args__ = (UniqueConstraint("tenant_id", "email", name="uq_gestor_tenant_email"),)
@@ -225,7 +238,6 @@ class Gestor(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     nombre: Mapped[str] = mapped_column(String(255))
     email: Mapped[str] = mapped_column(String(255))
-    hashed_password: Mapped[str] = mapped_column(String(255))
     activo: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 

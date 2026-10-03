@@ -22,6 +22,7 @@ from app.schemas import (
     GestorActivoUpdate,
     GestorCreate,
     GestorOut,
+    GestorSharedPasswordUpdate,
     ImportResult,
     InvoiceOut,
     MemberRow,
@@ -562,13 +563,28 @@ def create_gestor(
         tenant_id=tenant.id,
         nombre=payload.nombre,
         email=payload.email,
-        hashed_password=hash_password(payload.password),
     )
     db.add(gestor)
     db.commit()
     db.refresh(gestor)
     log_action(db, tenant, admin, "gestor.created", target=f"gestor:{gestor.id}", details=f"email={gestor.email}")
     return gestor
+
+
+@router.put("/gestores/shared-password", status_code=status.HTTP_204_NO_CONTENT)
+def set_gestor_shared_password(
+    tenant_slug: str,
+    payload: GestorSharedPasswordUpdate,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(require_owner),
+):
+    """Sets (or rotates) the single password every gestor device uses to log
+    in — see app/routers/gestor.py's /device-login. Owner-only since it's
+    effectively a shared credential for the whole field team."""
+    tenant = get_tenant(tenant_slug, db)
+    tenant.gestor_shared_password_hash = hash_password(payload.password)
+    db.commit()
+    log_action(db, tenant, admin, "gestor.shared_password_updated")
 
 
 @router.patch("/gestores/{gestor_id}/activo", response_model=GestorOut)

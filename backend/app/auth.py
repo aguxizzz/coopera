@@ -58,6 +58,26 @@ def create_gestor_access_token(gestor_id: int, tenant_id: int) -> str:
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
+def create_device_token(tenant_id: int) -> str:
+    """Short-lived token proving the device knows the cooperativa's shared
+    gestor password. Good for nothing but /gestor/select-profile — it has no
+    gestor identity, just the tenant it was issued for."""
+    expire = dt.datetime.utcnow() + dt.timedelta(minutes=settings.jwt_device_expire_minutes)
+    payload = {"tenant_id": tenant_id, "device": True, "exp": expire}
+    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+
+
+def decode_device_token(tenant_id: int, device_token: str) -> None:
+    """Validates a device token against the given tenant. Raises 401 if it's
+    invalid, expired, or scoped to a different cooperativa."""
+    try:
+        payload = jwt.decode(device_token, settings.jwt_secret, algorithms=["HS256"])
+    except JWTError:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token de dispositivo inválido")
+    if not payload.get("device") or payload.get("tenant_id") != tenant_id:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token de dispositivo inválido")
+
+
 def _hash_refresh_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 

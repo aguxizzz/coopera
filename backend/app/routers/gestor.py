@@ -3,7 +3,9 @@ from sqlalchemy.orm import Session
 
 from app.auth import (
     consume_gestor_refresh_token,
+    create_device_token,
     create_gestor_access_token,
+    decode_device_token,
     get_current_gestor,
     issue_gestor_refresh_token,
     verify_password,
@@ -14,12 +16,16 @@ from app.deps import get_tenant
 from app.models import Gestor, Meter, Reading
 from app.rate_limit import limiter
 from app.schemas import (
-    GestorLogin,
+    GestorDeviceLogin,
+    GestorDeviceLoginResponse,
+    GestorProfileOut,
     GestorRefreshRequest,
+    GestorSelectProfile,
     GestorTokenResponse,
     MeterOut,
     ReadingOut,
 )
+from app.services.audit import log_action
 from app.services.readings import register_reading
 from app.services.storage import UnsupportedPhotoType, upload_reading_photo
 
@@ -47,21 +53,67 @@ async def _read_capped(upload: UploadFile, max_bytes: int) -> bytes:
 router = APIRouter(prefix="/api/t/{tenant_slug}/gestor", tags=["gestor"])
 
 
-@router.post("/login", response_model=GestorTokenResponse)
+@router.post("/device-login", response_model=GestorDeviceLoginResponse)
 @limiter.limit("5/minute")
-def login(request: Request, tenant_slug: str, payload: GestorLogin, db: Session = Depends(get_db)):
+def device_login(
+    request: Request, tenant_slug: str, payload: GestorDeviceLogin, db: Session = Depends(get_db)
+):
+    """First step of the shared "household" login: the device proves it
+    knows the cooperativa's single gestor password and gets back a
+    short-lived device token plus the list of active gestor profiles to
+    choose from. Mirrors Netflix's one-login-many-profiles flow instead of
+    giving every gestor their own credentials."""
     tenant = get_tenant(tenant_slug, db)
+    if tenant.gestor_shared_password_hash is None or not verify_password(
+        payload.password, tenant.gestor_shared_password_hash
+    ):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Contraseña inválida")
+
+    profiles = (
+        db.query(Gestor)
+        .filter(Gestor.tenant_id == tenant.id, Gestor.activo.is_(True))
+        .order_by(Gestor.nombre)
+        .all()
+    )
+    device_token = create_device_token(tenant.id)
+    return GestorDeviceLoginResponse(
+        device_token=device_token,
+        profiles=[GestorProfileOut(id=g.id, nombre=g.nombre) for g in profiles],
+    )
+
+
+@router.post("/select-profile", response_model=GestorTokenResponse)
+@limiter.limit("20/minute")
+def select_profile(
+    request: Request, tenant_slug: str, payload: GestorSelectProfile, db: Session = Depends(get_db)
+):
+    """Second step: the device picks which gestor is reading today. This is
+    what gets recorded as the audit trail for "who did this" even though
+    the login itself is shared — every token minted here (and every Reading
+    it later creates) is tied to this specific gestor_id."""
+    tenant = get_tenant(tenant_slug, db)
+    decode_device_token(tenant.id, payload.device_token)
+
     gestor = (
         db.query(Gestor)
-        .filter(Gestor.tenant_id == tenant.id, Gestor.email == payload.email)
+        .filter(Gestor.id == payload.gestor_id, Gestor.tenant_id == tenant.id)
         .first()
     )
-    if gestor is None or not verify_password(payload.password, gestor.hashed_password):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Credenciales inválidas")
+    if gestor is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Gestor no encontrado")
     if not gestor.activo:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Gestor inactivo")
+
     token = create_gestor_access_token(gestor.id, tenant.id)
     refresh_token = issue_gestor_refresh_token(db, gestor)
+    log_action(
+        db,
+        tenant,
+        gestor,
+        "gestor.profile_selected",
+        target=f"gestor:{gestor.id}",
+        actor_type="gestor",
+    )
     return GestorTokenResponse(access_token=token, refresh_token=refresh_token)
 
 

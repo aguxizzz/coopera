@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     jwt_gestor_access_expire_minutes: int = 60
     jwt_gestor_refresh_expire_days: int = 30
 
+    # Gestores share one device-level password per cooperativa (set by the
+    # admin) instead of individual credentials — like a Netflix household
+    # login. A successful device-login mints this short-lived device token,
+    # which is only good for picking a gestor profile, never for reading
+    # endpoints directly.
+    jwt_device_expire_minutes: int = 15
+
     cors_origins: str = "http://localhost:5173"
 
     # Public URL this API is reachable at. Used to build absolute URLs for

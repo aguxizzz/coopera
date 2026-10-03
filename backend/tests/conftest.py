@@ -114,11 +114,13 @@ def member(db_session, tenant):
 
 @pytest.fixture()
 def gestor(db_session, tenant):
+    if tenant.gestor_shared_password_hash is None:
+        tenant.gestor_shared_password_hash = hash_password("gestorsecret")
+        db_session.commit()
     g = Gestor(
         tenant_id=tenant.id,
         nombre="Carlos Gestor",
         email="carlos@coopera.test",
-        hashed_password=hash_password("gestorsecret"),
     )
     db_session.add(g)
     db_session.commit()

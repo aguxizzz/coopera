@@ -48,6 +48,25 @@ class GestorRefreshRequest(BaseModel):
     refresh_token: str
 
 
+class GestorDeviceLogin(BaseModel):
+    password: str
+
+
+class GestorProfileOut(BaseModel):
+    id: int
+    nombre: str
+
+
+class GestorDeviceLoginResponse(BaseModel):
+    device_token: str
+    profiles: list[GestorProfileOut]
+
+
+class GestorSelectProfile(BaseModel):
+    device_token: str
+    gestor_id: int
+
+
 class MemberLookupRequest(BaseModel):
     numero_socio: str
     identificador: str
@@ -203,11 +222,6 @@ class AdminRoleUpdate(BaseModel):
     role: Literal["owner", "staff"]
 
 
-class GestorLogin(BaseModel):
-    email: str
-    password: str
-
-
 class GestorOut(BaseModel):
     id: int
     nombre: str
@@ -221,11 +235,14 @@ class GestorOut(BaseModel):
 class GestorCreate(BaseModel):
     nombre: str
     email: str
-    password: str
 
 
 class GestorActivoUpdate(BaseModel):
     activo: bool
+
+
+class GestorSharedPasswordUpdate(BaseModel):
+    password: str
 
 
 class MeterOut(BaseModel):
