@@ -40,6 +40,14 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class GestorTokenResponse(TokenResponse):
+    refresh_token: str
+
+
+class GestorRefreshRequest(BaseModel):
+    refresh_token: str
+
+
 class MemberLookupRequest(BaseModel):
     numero_socio: str
     identificador: str

@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.auth import create_access_token, create_gestor_token, create_platform_token, hash_password
+from app.auth import create_access_token, create_gestor_access_token, create_platform_token, hash_password
 from app.database import Base, get_db
 from app.main import app
 from app.models import AdminUser, Gestor, ImportBatch, Invoice, Member, Meter, PlatformUser, Tenant
@@ -128,7 +128,7 @@ def gestor(db_session, tenant):
 
 @pytest.fixture()
 def gestor_token(gestor):
-    return create_gestor_token(gestor.id, gestor.tenant_id)
+    return create_gestor_access_token(gestor.id, gestor.tenant_id)
 
 
 @pytest.fixture()

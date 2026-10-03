@@ -229,6 +229,14 @@ class Gestor(Base):
     activo: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
+    # Backs the mobile app's silent token refresh (see app/auth.py and
+    # routers/gestor.py): only the SHA-256 hash of the current refresh token
+    # is stored, rotated on every use, so a leaked DB row can't be replayed
+    # as a session. Null means the gestor has no active refresh token (never
+    # logged in from the app, or it was revoked/expired).
+    refresh_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    refresh_token_expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
     tenant: Mapped[Tenant] = relationship()
 
 

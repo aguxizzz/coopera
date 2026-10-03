@@ -1,13 +1,25 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy.orm import Session
 
-from app.auth import create_gestor_token, get_current_gestor, verify_password
+from app.auth import (
+    consume_gestor_refresh_token,
+    create_gestor_access_token,
+    get_current_gestor,
+    issue_gestor_refresh_token,
+    verify_password,
+)
 from app.config import settings
 from app.database import get_db
 from app.deps import get_tenant
 from app.models import Gestor, Meter, Reading
 from app.rate_limit import limiter
-from app.schemas import GestorLogin, MeterOut, ReadingOut, TokenResponse
+from app.schemas import (
+    GestorLogin,
+    GestorRefreshRequest,
+    GestorTokenResponse,
+    MeterOut,
+    ReadingOut,
+)
 from app.services.readings import register_reading
 from app.services.storage import UnsupportedPhotoType, upload_reading_photo
 
@@ -35,7 +47,7 @@ async def _read_capped(upload: UploadFile, max_bytes: int) -> bytes:
 router = APIRouter(prefix="/api/t/{tenant_slug}/gestor", tags=["gestor"])
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=GestorTokenResponse)
 @limiter.limit("5/minute")
 def login(request: Request, tenant_slug: str, payload: GestorLogin, db: Session = Depends(get_db)):
     tenant = get_tenant(tenant_slug, db)
@@ -48,8 +60,24 @@ def login(request: Request, tenant_slug: str, payload: GestorLogin, db: Session 
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Credenciales inválidas")
     if not gestor.activo:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Gestor inactivo")
-    token = create_gestor_token(gestor.id, tenant.id)
-    return TokenResponse(access_token=token)
+    token = create_gestor_access_token(gestor.id, tenant.id)
+    refresh_token = issue_gestor_refresh_token(db, gestor)
+    return GestorTokenResponse(access_token=token, refresh_token=refresh_token)
+
+
+@router.post("/refresh", response_model=GestorTokenResponse)
+@limiter.limit("20/minute")
+def refresh(
+    request: Request, tenant_slug: str, payload: GestorRefreshRequest, db: Session = Depends(get_db)
+):
+    """Silently mints a new access token (and rotates the refresh token) so
+    the mobile app never has to force a logout just because the 1h access
+    token expired mid-route — see mobile/src/lib/api.ts."""
+    tenant = get_tenant(tenant_slug, db)
+    gestor = consume_gestor_refresh_token(db, tenant.id, payload.refresh_token)
+    token = create_gestor_access_token(gestor.id, tenant.id)
+    refresh_token = issue_gestor_refresh_token(db, gestor)
+    return GestorTokenResponse(access_token=token, refresh_token=refresh_token)
 
 
 @router.get("/meters", response_model=list[MeterOut])

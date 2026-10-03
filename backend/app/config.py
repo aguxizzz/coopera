@@ -13,6 +13,15 @@ class Settings(BaseSettings):
     use_sqlite: bool = False
     jwt_secret: str = "change-me-in-production"
     jwt_expire_minutes: int = 480
+
+    # Gestor (mobile meter-reader) tokens use their own, shorter-lived access
+    # token backed by a long-lived refresh token, so a field worker whose
+    # token expires mid-route gets silently refreshed instead of logged out
+    # (see mobile/src/lib/api.ts). Admin/platform logins still use the plain
+    # jwt_expire_minutes above.
+    jwt_gestor_access_expire_minutes: int = 60
+    jwt_gestor_refresh_expire_days: int = 30
+
     cors_origins: str = "http://localhost:5173"
 
     # Public URL this API is reachable at. Used to build absolute URLs for

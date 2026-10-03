@@ -1,4 +1,6 @@
 import datetime as dt
+import hashlib
+import secrets
 
 import bcrypt
 from fastapi import Depends, HTTPException, status
@@ -12,6 +14,8 @@ from app.deps import get_tenant
 from app.models import AdminUser, Gestor, PlatformUser, Tenant
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+_REFRESH_TOKEN_BYTES = 32
 
 
 class PlatformActor:
@@ -48,10 +52,50 @@ def create_platform_token(platform_user_id: int) -> str:
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
-def create_gestor_token(gestor_id: int, tenant_id: int) -> str:
-    expire = dt.datetime.utcnow() + dt.timedelta(minutes=settings.jwt_expire_minutes)
+def create_gestor_access_token(gestor_id: int, tenant_id: int) -> str:
+    expire = dt.datetime.utcnow() + dt.timedelta(minutes=settings.jwt_gestor_access_expire_minutes)
     payload = {"sub": str(gestor_id), "tenant_id": tenant_id, "gestor": True, "exp": expire}
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+
+
+def _hash_refresh_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def issue_gestor_refresh_token(db: Session, gestor: Gestor) -> str:
+    """Mints a new opaque refresh token for the gestor, storing only its hash
+    (rotated out on every refresh) so a leaked DB snapshot can't be replayed
+    as a live session."""
+    token = secrets.token_urlsafe(_REFRESH_TOKEN_BYTES)
+    gestor.refresh_token_hash = _hash_refresh_token(token)
+    gestor.refresh_token_expires_at = dt.datetime.utcnow() + dt.timedelta(
+        days=settings.jwt_gestor_refresh_expire_days
+    )
+    db.add(gestor)
+    db.commit()
+    return token
+
+
+def consume_gestor_refresh_token(db: Session, tenant_id: int, refresh_token: str) -> Gestor:
+    """Validates a refresh token and returns the gestor it belongs to. Does
+    NOT rotate it — the caller mints and persists the replacement once it has
+    successfully issued a new access token, via issue_gestor_refresh_token."""
+    token_hash = _hash_refresh_token(refresh_token)
+    gestor = (
+        db.query(Gestor)
+        .filter(Gestor.tenant_id == tenant_id, Gestor.refresh_token_hash == token_hash)
+        .first()
+    )
+    if gestor is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Refresh token inválido")
+    if (
+        gestor.refresh_token_expires_at is None
+        or gestor.refresh_token_expires_at < dt.datetime.utcnow()
+    ):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Refresh token expirado")
+    if not gestor.activo:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Gestor inactivo")
+    return gestor
 
 
 def _decode(credentials: HTTPAuthorizationCredentials | None) -> dict:

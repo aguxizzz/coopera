@@ -1,4 +1,5 @@
 from app.config import settings
+from app.models import Tenant
 
 
 def test_gestor_login_success(client, tenant, gestor):
@@ -7,7 +8,86 @@ def test_gestor_login_success(client, tenant, gestor):
         json={"email": gestor.email, "password": "gestorsecret"},
     )
     assert resp.status_code == 200
-    assert resp.json()["access_token"]
+    body = resp.json()
+    assert body["access_token"]
+    assert body["refresh_token"]
+
+
+def test_gestor_refresh_issues_new_access_token(client, tenant, gestor):
+    login_resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/login",
+        json={"email": gestor.email, "password": "gestorsecret"},
+    )
+    refresh_token = login_resp.json()["refresh_token"]
+
+    resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/refresh",
+        json={"refresh_token": refresh_token},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["access_token"]
+    assert body["refresh_token"]
+
+    # The new access token works against a protected route.
+    resp = client.get(
+        f"/api/t/{tenant.slug}/gestor/meters",
+        headers={"Authorization": f"Bearer {body['access_token']}"},
+    )
+    assert resp.status_code == 200
+
+
+def test_gestor_refresh_rotates_token_invalidating_the_old_one(client, tenant, gestor):
+    login_resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/login",
+        json={"email": gestor.email, "password": "gestorsecret"},
+    )
+    old_refresh_token = login_resp.json()["refresh_token"]
+
+    client.post(f"/api/t/{tenant.slug}/gestor/refresh", json={"refresh_token": old_refresh_token})
+
+    resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/refresh", json={"refresh_token": old_refresh_token}
+    )
+    assert resp.status_code == 401
+
+
+def test_gestor_refresh_rejects_unknown_token(client, tenant, gestor):
+    resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/refresh", json={"refresh_token": "not-a-real-token"}
+    )
+    assert resp.status_code == 401
+
+
+def test_gestor_refresh_rejects_deactivated_gestor(client, tenant, gestor, db_session):
+    login_resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/login",
+        json={"email": gestor.email, "password": "gestorsecret"},
+    )
+    refresh_token = login_resp.json()["refresh_token"]
+
+    gestor.activo = False
+    db_session.commit()
+
+    resp = client.post(f"/api/t/{tenant.slug}/gestor/refresh", json={"refresh_token": refresh_token})
+    assert resp.status_code == 403
+
+
+def test_gestor_refresh_rejects_other_tenants_token(client, tenant, gestor, db_session):
+    login_resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/login",
+        json={"email": gestor.email, "password": "gestorsecret"},
+    )
+    refresh_token = login_resp.json()["refresh_token"]
+
+    other_tenant = Tenant(slug="otra-coopera-test", name="Otra Cooperativa")
+    db_session.add(other_tenant)
+    db_session.commit()
+
+    resp = client.post(
+        f"/api/t/{other_tenant.slug}/gestor/refresh", json={"refresh_token": refresh_token}
+    )
+    assert resp.status_code == 401
 
 
 def test_gestor_login_is_rate_limited(client, tenant, gestor):
