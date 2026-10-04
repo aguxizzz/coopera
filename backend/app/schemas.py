@@ -99,6 +99,7 @@ class MemberAccountOut(BaseModel):
     mp_titular: str | None
     mp_connected: bool
     helipagos_connected: bool
+    macroclick_connected: bool
 
 
 class PayInvoiceRequest(BaseModel):
@@ -128,6 +129,18 @@ class HelipagosStatusOut(BaseModel):
 class HelipagosConnectRequest(BaseModel):
     token: str
     webhook_apikey: str
+    environment: Literal["sandbox", "production"] = "sandbox"
+
+
+class MacroclickStatusOut(BaseModel):
+    connected: bool
+    environment: str
+
+
+class MacroclickConnectRequest(BaseModel):
+    comercio_id: str
+    sucursal: str = "0000000000"
+    secret_key: str
     environment: Literal["sandbox", "production"] = "sandbox"
 
 

@@ -3,6 +3,7 @@ from fastapi.responses import Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
 from app.deps import get_tenant
 from app.models import Invoice, Member, Tenant
@@ -17,6 +18,7 @@ from app.schemas import (
 )
 from app.services.helipagos import HelipagosError
 from app.services.helipagos import create_solicitud_pago as create_helipagos_solicitud_pago
+from app.services.macroclick import build_checkout_token
 from app.services.mercadopago import MercadoPagoError, create_preference
 from app.services.pdf import build_boleta_pdf
 
@@ -80,6 +82,7 @@ def lookup_member(
         mp_titular=tenant.mp_titular,
         mp_connected=bool(tenant.mp_access_token),
         helipagos_connected=bool(tenant.helipagos_token),
+        macroclick_connected=bool(tenant.macroclick_comercio_id),
     )
 
 
@@ -149,6 +152,42 @@ def pay_invoice_helipagos(
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
 
     return PayInvoiceResponse(init_point=data.get("checkout_url") or data["short_url"])
+
+
+@router.post("/invoices/{invoice_id}/pay-macroclick", response_model=PayInvoiceResponse)
+@limiter.limit("10/minute")
+def pay_invoice_macroclick(
+    request: Request,
+    tenant_slug: str,
+    invoice_id: int,
+    payload: PayInvoiceRequest,
+    db: Session = Depends(get_db),
+):
+    """Macro Click de Pago - integración NO OFICIAL (ver
+    app/services/macroclick.py). A diferencia de MP/Helipagos no hay una URL
+    de checkout de Macro para devolver de antemano: `init_point` apunta a
+    nuestro propio endpoint (`routers/macroclick.py`), que sirve el form
+    auto-submit."""
+    tenant = get_tenant(tenant_slug, db)
+    member = _find_member(db, tenant, payload.numero_socio, payload.identificador)
+
+    invoice = (
+        db.query(Invoice)
+        .filter(Invoice.id == invoice_id, Invoice.member_id == member.id)
+        .first()
+    )
+    if invoice is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Factura no encontrada")
+    if invoice.pagado:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Esta factura ya está pagada")
+    if not tenant.macroclick_comercio_id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Esta cooperativa todavía no conectó Macro Click de Pago"
+        )
+
+    token = build_checkout_token(tenant.slug, invoice.id)
+    init_point = f"{settings.public_base_url.rstrip('/')}/api/t/{tenant.slug}/macroclick/checkout-form/{token}"
+    return PayInvoiceResponse(init_point=init_point)
 
 
 @router.get("/boleta.pdf")

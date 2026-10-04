@@ -9,7 +9,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app.config import settings
 from app.rate_limit import limiter
-from app.routers import admin, dev, gestor, helipagos, mp, public
+from app.routers import admin, dev, gestor, helipagos, macroclick, mp, public
 
 os.makedirs(settings.upload_dir, exist_ok=True)
 
@@ -35,6 +35,7 @@ app.include_router(gestor.router)
 app.include_router(dev.router)
 app.include_router(mp.router)
 app.include_router(helipagos.router)
+app.include_router(macroclick.router)
 
 
 @app.get("/health")

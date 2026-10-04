@@ -27,6 +27,8 @@ from app.schemas import (
     HelipagosStatusOut,
     ImportResult,
     InvoiceOut,
+    MacroclickConnectRequest,
+    MacroclickStatusOut,
     MemberRow,
     MeterCreate,
     MeterOut,
@@ -43,6 +45,8 @@ from app.services.audit import log_action
 from app.services.importer import ImportError_, import_spreadsheet
 from app.services.helipagos import disconnect_tenant as disconnect_helipagos_tenant
 from app.services.helipagos import save_credentials as save_helipagos_credentials
+from app.services.macroclick import disconnect_tenant as disconnect_macroclick_tenant
+from app.services.macroclick import save_credentials as save_macroclick_credentials
 from app.services.mercadopago import MercadoPagoError, build_authorize_url, disconnect_tenant
 from app.services.pdf_importer import run_pdf_import_job
 from app.services.storage import UnsupportedLogoType, delete_logo, upload_logo
@@ -401,6 +405,45 @@ def helipagos_disconnect(
     disconnect_helipagos_tenant(db, tenant)
     log_action(db, tenant, admin, "helipagos.disconnected")
     return HelipagosStatusOut(connected=False, environment="sandbox")
+
+
+@router.get("/macroclick/status", response_model=MacroclickStatusOut)
+def macroclick_status(
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    return MacroclickStatusOut(
+        connected=bool(tenant.macroclick_comercio_id), environment=tenant.macroclick_environment
+    )
+
+
+@router.put("/macroclick", response_model=MacroclickStatusOut)
+def macroclick_connect(
+    tenant_slug: str,
+    payload: MacroclickConnectRequest,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(require_owner),
+):
+    tenant = get_tenant(tenant_slug, db)
+    save_macroclick_credentials(
+        db, tenant, payload.comercio_id, payload.sucursal, payload.secret_key, payload.environment
+    )
+    log_action(db, tenant, admin, "macroclick.connected")
+    return MacroclickStatusOut(connected=True, environment=tenant.macroclick_environment)
+
+
+@router.delete("/macroclick", response_model=MacroclickStatusOut)
+def macroclick_disconnect(
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(require_owner),
+):
+    tenant = get_tenant(tenant_slug, db)
+    disconnect_macroclick_tenant(db, tenant)
+    log_action(db, tenant, admin, "macroclick.disconnected")
+    return MacroclickStatusOut(connected=False, environment="sandbox")
 
 
 @router.delete("/logo", response_model=TenantSettingsOut)

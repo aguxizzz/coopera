@@ -62,6 +62,15 @@ class Tenant(Base):
     helipagos_webhook_apikey: Mapped[str | None] = mapped_column(String(500), nullable=True)
     helipagos_environment: Mapped[str] = mapped_column(String(16), default="sandbox", server_default="sandbox")
 
+    # Macro Click de Pago (Banco Macro): credenciales por comercio, sin OAuth,
+    # mismo esquema que Helipagos. NO OFICIAL: implementado reconstruyendo el
+    # protocolo a partir de un plugin de WooCommerce de terceros (ver
+    # app/services/macroclick.py), no de documentación provista por el banco.
+    macroclick_comercio_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    macroclick_sucursal: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    macroclick_secret_key: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    macroclick_environment: Mapped[str] = mapped_column(String(16), default="sandbox", server_default="sandbox")
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     admins: Mapped[list["AdminUser"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
