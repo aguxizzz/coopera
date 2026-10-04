@@ -217,9 +217,14 @@ def update_invoice_pagado(
     invoice.pagado = payload.pagado
     db.commit()
     db.refresh(invoice)
+    member = db.query(Member).filter(Member.id == invoice.member_id).first()
     log_action(
         db, tenant, _admin, "invoice.pagado_updated",
-        target=f"invoice:{invoice.id}", details=f"pagado={payload.pagado}",
+        target=f"invoice:{invoice.id}",
+        details=(
+            f"pagado={payload.pagado} | socio={member.nombre if member else '?'} | "
+            f"periodo={invoice.period_month}/{invoice.period_year}"
+        ),
     )
     return invoice
 
