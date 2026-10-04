@@ -15,6 +15,8 @@ from app.schemas import (
     PayInvoiceResponse,
     TenantPublic,
 )
+from app.services.helipagos import HelipagosError
+from app.services.helipagos import create_solicitud_pago as create_helipagos_solicitud_pago
 from app.services.mercadopago import MercadoPagoError, create_preference
 from app.services.pdf import build_boleta_pdf
 
@@ -77,6 +79,7 @@ def lookup_member(
         mp_cbu=tenant.mp_cbu,
         mp_titular=tenant.mp_titular,
         mp_connected=bool(tenant.mp_access_token),
+        helipagos_connected=bool(tenant.helipagos_token),
     )
 
 
@@ -112,6 +115,40 @@ def pay_invoice(
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
 
     return PayInvoiceResponse(init_point=preference["init_point"])
+
+
+@router.post("/invoices/{invoice_id}/pay-helipagos", response_model=PayInvoiceResponse)
+@limiter.limit("10/minute")
+def pay_invoice_helipagos(
+    request: Request,
+    tenant_slug: str,
+    invoice_id: int,
+    payload: PayInvoiceRequest,
+    db: Session = Depends(get_db),
+):
+    tenant = get_tenant(tenant_slug, db)
+    member = _find_member(db, tenant, payload.numero_socio, payload.identificador)
+
+    invoice = (
+        db.query(Invoice)
+        .filter(Invoice.id == invoice_id, Invoice.member_id == member.id)
+        .first()
+    )
+    if invoice is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Factura no encontrada")
+    if invoice.pagado:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Esta factura ya está pagada")
+    if not tenant.helipagos_token:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Esta cooperativa todavía no conectó Helipagos"
+        )
+
+    try:
+        data = create_helipagos_solicitud_pago(db, tenant, member, invoice)
+    except HelipagosError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
+
+    return PayInvoiceResponse(init_point=data.get("checkout_url") or data["short_url"])
 
 
 @router.get("/boleta.pdf")

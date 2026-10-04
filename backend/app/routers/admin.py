@@ -23,6 +23,8 @@ from app.schemas import (
     GestorCreate,
     GestorOut,
     GestorSharedPasswordUpdate,
+    HelipagosConnectRequest,
+    HelipagosStatusOut,
     ImportResult,
     InvoiceOut,
     MemberRow,
@@ -39,6 +41,8 @@ from app.schemas import (
 )
 from app.services.audit import log_action
 from app.services.importer import ImportError_, import_spreadsheet
+from app.services.helipagos import disconnect_tenant as disconnect_helipagos_tenant
+from app.services.helipagos import save_credentials as save_helipagos_credentials
 from app.services.mercadopago import MercadoPagoError, build_authorize_url, disconnect_tenant
 from app.services.pdf_importer import run_pdf_import_job
 from app.services.storage import UnsupportedLogoType, delete_logo, upload_logo
@@ -360,6 +364,43 @@ def mp_disconnect(
     disconnect_tenant(db, tenant)
     log_action(db, tenant, admin, "mp.disconnected")
     return MpStatusOut(configured=settings.mp_configured, connected=False, mp_user_id=None)
+
+
+@router.get("/helipagos/status", response_model=HelipagosStatusOut)
+def helipagos_status(
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    return HelipagosStatusOut(
+        connected=bool(tenant.helipagos_token), environment=tenant.helipagos_environment
+    )
+
+
+@router.put("/helipagos", response_model=HelipagosStatusOut)
+def helipagos_connect(
+    tenant_slug: str,
+    payload: HelipagosConnectRequest,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(require_owner),
+):
+    tenant = get_tenant(tenant_slug, db)
+    save_helipagos_credentials(db, tenant, payload.token, payload.webhook_apikey, payload.environment)
+    log_action(db, tenant, admin, "helipagos.connected")
+    return HelipagosStatusOut(connected=True, environment=tenant.helipagos_environment)
+
+
+@router.delete("/helipagos", response_model=HelipagosStatusOut)
+def helipagos_disconnect(
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(require_owner),
+):
+    tenant = get_tenant(tenant_slug, db)
+    disconnect_helipagos_tenant(db, tenant)
+    log_action(db, tenant, admin, "helipagos.disconnected")
+    return HelipagosStatusOut(connected=False, environment="sandbox")
 
 
 @router.delete("/logo", response_model=TenantSettingsOut)

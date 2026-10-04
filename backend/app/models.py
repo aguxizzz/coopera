@@ -53,6 +53,15 @@ class Tenant(Base):
     mp_public_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     mp_token_expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # Helipagos: token por comercio (no OAuth, a diferencia de Mercado Pago).
+    # Guardado cifrado igual que los tokens de MP (ver app/services/helipagos.py).
+    helipagos_token: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    # Valor del header "apikey" que Helipagos manda en cada webhook; se compara
+    # contra esto para validar que la notificación es legítima (Helipagos no
+    # firma el payload, solo manda este secreto compartido en un header).
+    helipagos_webhook_apikey: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    helipagos_environment: Mapped[str] = mapped_column(String(16), default="sandbox", server_default="sandbox")
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     admins: Mapped[list["AdminUser"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
@@ -147,6 +156,10 @@ class Invoice(Base):
     # arrives via the tenant's webhook.
     mp_preference_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     mp_payment_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # ID de la "solicitud de pago" en Helipagos (id_sp). Permite consultar estado
+    # y evitar crear una solicitud duplicada si el socio reintenta pagar.
+    helipagos_id_sp: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 

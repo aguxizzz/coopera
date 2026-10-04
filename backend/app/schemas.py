@@ -98,6 +98,7 @@ class MemberAccountOut(BaseModel):
     mp_cbu: str | None
     mp_titular: str | None
     mp_connected: bool
+    helipagos_connected: bool
 
 
 class PayInvoiceRequest(BaseModel):
@@ -117,6 +118,17 @@ class MpStatusOut(BaseModel):
 
 class MpConnectUrlOut(BaseModel):
     url: str
+
+
+class HelipagosStatusOut(BaseModel):
+    connected: bool
+    environment: str
+
+
+class HelipagosConnectRequest(BaseModel):
+    token: str
+    webhook_apikey: str
+    environment: Literal["sandbox", "production"] = "sandbox"
 
 
 class MemberRow(BaseModel):
