@@ -5,6 +5,8 @@ import {
   boletaUrl,
   getTenant,
   lookupMember,
+  payInvoice,
+  payInvoiceHelipagos,
   type MemberAccount,
   type TenantPublic,
 } from "../lib/api";
@@ -70,6 +72,10 @@ export default function TenantPortal() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [copiedField, setCopiedField] = useState<"alias" | "cbu" | null>(null);
+  const [paying, setPaying] = useState(false);
+  const [payError, setPayError] = useState<string | null>(null);
+  const [payingHelipagos, setPayingHelipagos] = useState(false);
+  const [payHelipagosError, setPayHelipagosError] = useState<string | null>(null);
 
   useEffect(() => {
     getTenant(tenantSlug)
@@ -89,6 +95,42 @@ export default function TenantPortal() {
       setError(err instanceof ApiError ? err.message : "Ocurrió un error inesperado");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handlePay() {
+    if (!account?.ultima_factura) return;
+    setPaying(true);
+    setPayError(null);
+    try {
+      const { init_point } = await payInvoice(
+        tenantSlug,
+        account.ultima_factura.id,
+        numeroSocio,
+        identificador,
+      );
+      window.location.href = init_point;
+    } catch (err) {
+      setPayError(err instanceof ApiError ? err.message : "No se pudo iniciar el pago");
+      setPaying(false);
+    }
+  }
+
+  async function handlePayHelipagos() {
+    if (!account?.ultima_factura) return;
+    setPayingHelipagos(true);
+    setPayHelipagosError(null);
+    try {
+      const { init_point } = await payInvoiceHelipagos(
+        tenantSlug,
+        account.ultima_factura.id,
+        numeroSocio,
+        identificador,
+      );
+      window.location.href = init_point;
+    } catch (err) {
+      setPayHelipagosError(err instanceof ApiError ? err.message : "No se pudo iniciar el pago");
+      setPayingHelipagos(false);
     }
   }
 
@@ -223,11 +265,47 @@ export default function TenantPortal() {
           </div>
         )}
 
+        {account.mp_connected && account.ultima_factura && !account.ultima_factura.pagado && (
+          <div className="card portal-pay-card">
+            <div className="pay-card-head">
+              <div>
+                <h3>Pagá tu boleta online</h3>
+                <p className="muted">
+                  Pagá de forma segura con Mercado Pago (tarjeta, dinero en cuenta o transferencia).
+                </p>
+              </div>
+            </div>
+            <button type="button" onClick={handlePay} disabled={paying}>
+              {paying ? "Redirigiendo a Mercado Pago..." : `Pagar ${money(account.ultima_factura.monto)}`}
+            </button>
+            {payError && <p className="error">{payError}</p>}
+          </div>
+        )}
+
+        {account.helipagos_connected && account.ultima_factura && !account.ultima_factura.pagado && (
+          <div className="card portal-pay-card">
+            <div className="pay-card-head">
+              <div>
+                <h3>Pagá tu boleta con Helipagos</h3>
+                <p className="muted">
+                  Pagá de forma segura con tarjeta, código de barras o QR a través de Helipagos.
+                </p>
+              </div>
+            </div>
+            <button type="button" onClick={handlePayHelipagos} disabled={payingHelipagos}>
+              {payingHelipagos
+                ? "Redirigiendo a Helipagos..."
+                : `Pagar ${money(account.ultima_factura.monto)}`}
+            </button>
+            {payHelipagosError && <p className="error">{payHelipagosError}</p>}
+          </div>
+        )}
+
         {account.mp_alias && (
           <div className="card portal-pay-card">
             <div className="pay-card-head">
               <div>
-                <h3>Pagá con Mercado Pago</h3>
+                <h3>O transferí manualmente</h3>
                 <p className="muted">Transferí directamente a la cuenta de la cooperativa.</p>
               </div>
             </div>

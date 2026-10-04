@@ -1,21 +1,38 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { Navigate, useParams } from "react-router-dom";
-import { Search, X } from "lucide-react";
+import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Search, X, Crown, UserCog, UserPlus, Trash2 } from "lucide-react";
 import {
   ApiError,
+  connectHelipagos,
+  createAdmin,
+  deleteAdmin,
   deleteLogo,
   deleteMember,
   deleteMembers,
+  disconnectHelipagos,
+  disconnectMp,
   getAdminSettings,
+  getAuditLog,
+  getCurrentAdmin,
+  getHelipagosStatus,
+  getMpConnectUrl,
+  getMpStatus,
   importSpreadsheet,
+  listAdmins,
   listMemberInvoices,
   listMembers,
   setInvoicePagado,
+  updateAdminRole,
   updateAdminSettings,
   uploadLogo,
+  type AdminRole,
+  type AdminUserOut,
+  type AuditLogEntry,
+  type HelipagosStatus,
   type ImportResult,
   type InvoiceOut,
   type MemberRow,
+  type MpStatus,
   type TenantSettings,
 } from "../lib/api";
 import Drawer from "../components/Drawer";
@@ -38,9 +55,17 @@ type ConfirmState = {
   onConfirm: () => void;
 };
 
+const ACCENT_SWATCHES = ["#1d6fa3", "#0f7a6a", "#2f5fe0", "#b4451f", "#5a3fa0"];
+
 export default function AdminDashboard() {
   const { tenantSlug = "" } = useParams();
+  const navigate = useNavigate();
   const token = sessionStorage.getItem(`coopera_token_${tenantSlug}`);
+
+  function handleLogout() {
+    sessionStorage.removeItem(`coopera_token_${tenantSlug}`);
+    navigate(`/${tenantSlug}/admin`);
+  }
 
   const [section, setSection] = useState<AdminSection>("principal");
 
@@ -81,6 +106,197 @@ export default function AdminDashboard() {
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [logoUploading, setLogoUploading] = useState<"primary" | "secondary" | null>(null);
   const [logoError, setLogoError] = useState<string | null>(null);
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [mpStatus, setMpStatus] = useState<MpStatus | null>(null);
+  const [mpLoading, setMpLoading] = useState(false);
+  const [mpError, setMpError] = useState<string | null>(null);
+  const mpResult = searchParams.get("mp");
+
+  const loadMpStatus = useCallback(() => {
+    if (!token) return;
+    getMpStatus(tenantSlug, token)
+      .then(setMpStatus)
+      .catch(() => setMpError("No se pudo cargar el estado de Mercado Pago"));
+  }, [tenantSlug, token]);
+
+  useEffect(() => {
+    loadMpStatus();
+  }, [loadMpStatus]);
+
+  useEffect(() => {
+    if (mpResult) {
+      const next = new URLSearchParams(searchParams);
+      next.delete("mp");
+      setSearchParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mpResult]);
+
+  async function handleMpConnect() {
+    if (!token) return;
+    setMpLoading(true);
+    setMpError(null);
+    try {
+      const { url } = await getMpConnectUrl(tenantSlug, token);
+      window.location.href = url;
+    } catch (err) {
+      setMpError(err instanceof ApiError ? err.message : "No se pudo iniciar la conexión con Mercado Pago");
+      setMpLoading(false);
+    }
+  }
+
+  async function handleMpDisconnect() {
+    if (!token) return;
+    setMpLoading(true);
+    setMpError(null);
+    try {
+      const status = await disconnectMp(tenantSlug, token);
+      setMpStatus(status);
+    } catch (err) {
+      setMpError(err instanceof ApiError ? err.message : "No se pudo desconectar Mercado Pago");
+    } finally {
+      setMpLoading(false);
+    }
+  }
+
+  const [helipagosStatus, setHelipagosStatus] = useState<HelipagosStatus | null>(null);
+  const [helipagosLoading, setHelipagosLoading] = useState(false);
+  const [helipagosError, setHelipagosError] = useState<string | null>(null);
+  const [helipagosForm, setHelipagosForm] = useState({
+    token: "",
+    webhook_apikey: "",
+    environment: "sandbox" as "sandbox" | "production",
+  });
+
+  const loadHelipagosStatus = useCallback(() => {
+    if (!token) return;
+    getHelipagosStatus(tenantSlug, token)
+      .then(setHelipagosStatus)
+      .catch(() => setHelipagosError("No se pudo cargar el estado de Helipagos"));
+  }, [tenantSlug, token]);
+
+  useEffect(() => {
+    loadHelipagosStatus();
+  }, [loadHelipagosStatus]);
+
+  async function handleHelipagosConnect(e: FormEvent) {
+    e.preventDefault();
+    if (!token) return;
+    setHelipagosLoading(true);
+    setHelipagosError(null);
+    try {
+      const status = await connectHelipagos(tenantSlug, token, helipagosForm);
+      setHelipagosStatus(status);
+      setHelipagosForm({ token: "", webhook_apikey: "", environment: "sandbox" });
+    } catch (err) {
+      setHelipagosError(err instanceof ApiError ? err.message : "No se pudo conectar Helipagos");
+    } finally {
+      setHelipagosLoading(false);
+    }
+  }
+
+  async function handleHelipagosDisconnect() {
+    if (!token) return;
+    setHelipagosLoading(true);
+    setHelipagosError(null);
+    try {
+      const status = await disconnectHelipagos(tenantSlug, token);
+      setHelipagosStatus(status);
+    } catch (err) {
+      setHelipagosError(err instanceof ApiError ? err.message : "No se pudo desconectar Helipagos");
+    } finally {
+      setHelipagosLoading(false);
+    }
+  }
+
+  const [currentAdmin, setCurrentAdmin] = useState<AdminUserOut | null>(null);
+  const isOwner = currentAdmin?.role === "owner";
+
+  const [admins, setAdmins] = useState<AdminUserOut[]>([]);
+  const [adminsError, setAdminsError] = useState<string | null>(null);
+  const [newAdminEmail, setNewAdminEmail] = useState("");
+  const [newAdminPassword, setNewAdminPassword] = useState("");
+  const [newAdminRole, setNewAdminRole] = useState<AdminRole>("staff");
+  const [adminsSaving, setAdminsSaving] = useState(false);
+
+  const [auditLog, setAuditLog] = useState<AuditLogEntry[]>([]);
+
+  const loadAdminsAndAudit = useCallback(() => {
+    if (!token) return;
+    getCurrentAdmin(tenantSlug, token)
+      .then(setCurrentAdmin)
+      .catch(() => undefined);
+  }, [tenantSlug, token]);
+
+  useEffect(() => {
+    loadAdminsAndAudit();
+  }, [loadAdminsAndAudit]);
+
+  const loadAdmins = useCallback(() => {
+    if (!token || !isOwner) return;
+    listAdmins(tenantSlug, token)
+      .then(setAdmins)
+      .catch(() => setAdminsError("No se pudo cargar la lista de administradores"));
+    getAuditLog(tenantSlug, token)
+      .then(setAuditLog)
+      .catch(() => undefined);
+  }, [tenantSlug, token, isOwner]);
+
+  useEffect(() => {
+    loadAdmins();
+  }, [loadAdmins]);
+
+  async function handleCreateAdmin(e: FormEvent) {
+    e.preventDefault();
+    if (!token) return;
+    setAdminsSaving(true);
+    setAdminsError(null);
+    try {
+      await createAdmin(tenantSlug, token, {
+        email: newAdminEmail,
+        password: newAdminPassword,
+        role: newAdminRole,
+      });
+      setNewAdminEmail("");
+      setNewAdminPassword("");
+      setNewAdminRole("staff");
+      loadAdmins();
+    } catch (err) {
+      setAdminsError(err instanceof ApiError ? err.message : "No se pudo crear el administrador");
+    } finally {
+      setAdminsSaving(false);
+    }
+  }
+
+  async function handleChangeAdminRole(admin: AdminUserOut, role: AdminRole) {
+    if (!token) return;
+    setAdminsError(null);
+    try {
+      await updateAdminRole(tenantSlug, token, admin.id, role);
+      loadAdmins();
+    } catch (err) {
+      setAdminsError(err instanceof ApiError ? err.message : "No se pudo cambiar el rol");
+    }
+  }
+
+  function handleRemoveAdmin(admin: AdminUserOut) {
+    setConfirmState({
+      message: `¿Eliminar al administrador ${admin.email}?`,
+      onConfirm: async () => {
+        if (!token) return;
+        setAdminsError(null);
+        try {
+          await deleteAdmin(tenantSlug, token, admin.id);
+          setConfirmState(null);
+          loadAdmins();
+        } catch (err) {
+          setAdminsError(err instanceof ApiError ? err.message : "No se pudo eliminar el administrador");
+          setConfirmState(null);
+        }
+      },
+    });
+  }
 
   const loadSettings = useCallback(() => {
     if (!token) return;
@@ -171,6 +387,14 @@ export default function AdminDashboard() {
       ),
     );
   }, [members, sociosQuery]);
+
+  const stats = useMemo(
+    () => ({
+      socios: members.length,
+      saldo: members.reduce((total, m) => total + m.saldo_total, 0),
+    }),
+    [members],
+  );
 
   if (!token) {
     return <Navigate to={`/${tenantSlug}/admin`} replace />;
@@ -296,81 +520,130 @@ export default function AdminDashboard() {
   const accent = settings?.primary_color ?? "#2f5fe0";
 
   return (
-    <div className="admin-dashboard" style={{ ["--accent" as string]: accent }}>
-      <LogoPlaceholder className="admin-logo-fixed" src={settings?.logo_primary_url} />
-
-      <header className="tenant-header">
-        <div className="admin-header-brand">
-          <LogoPlaceholder className="admin-logo-inline" src={settings?.logo_primary_url} />
-          <div>
-            <h1>{settings?.name ?? "Panel de administración"}</h1>
-            <p className="muted">Subí la planilla mensual para actualizar el consumo y la deuda de tus socios.</p>
+    <div className="admin-panel" style={{ ["--accent" as string]: accent }}>
+      <aside className="admin-sidebar">
+        <div className="admin-sidebar-brand">
+          <LogoPlaceholder src={settings?.logo_primary_url} alt={settings?.name} />
+          <div className="admin-sidebar-brand-text">
+            <span className="admin-sidebar-name">{settings?.name ?? "Cooperativa"}</span>
+            <span className="admin-sidebar-sub">Administración</span>
           </div>
         </div>
-      </header>
 
-      <AdminNav active={section} onChange={setSection} />
+        <AdminNav variant="sidebar" active={section} onChange={setSection} />
 
-      {section === "config" && (
+        <div className="admin-sidebar-footer">
+          <Link className="admin-sidebar-footer-link" to={`/${tenantSlug}`}>
+            Ver portal de socios
+          </Link>
+          {currentAdmin && <span className="muted admin-sidebar-email">{currentAdmin.email}</span>}
+          <button type="button" className="btn-ghost" onClick={handleLogout}>
+            Cerrar sesión
+          </button>
+        </div>
+      </aside>
+
+      <div className="admin-content">
+        <header className="admin-topbar">
+          <div className="admin-topbar-row">
+            <div className="admin-topbar-brand">
+              <LogoPlaceholder src={settings?.logo_primary_url} alt={settings?.name} />
+              <div className="admin-topbar-brand-text">
+                <span>{settings?.name ?? "Cooperativa"}</span>
+                <span>Administración</span>
+              </div>
+            </div>
+            <button type="button" className="btn-ghost" onClick={handleLogout}>
+              Salir
+            </button>
+          </div>
+          <AdminNav variant="tabs" active={section} onChange={setSection} />
+        </header>
+
+        <main className="admin-main">
+          <div className="admin-main-inner">
+          {section === "principal" && (
+            <div className="admin-stats">
+              <div className="admin-stat-card">
+                <span className="admin-stat-label">Socios activos</span>
+                <span className="admin-stat-value">{stats.socios}</span>
+              </div>
+              <div className="admin-stat-card">
+                <span className="admin-stat-label">Saldo a cobrar</span>
+                <span className="admin-stat-value">{money(stats.saldo)}</span>
+              </div>
+            </div>
+          )}
+
+          {section === "config" && (
+      <form onSubmit={handleSaveSettings}>
       <div className="card">
         <div className="card-head">
-          <h2>Configuración de la cooperativa</h2>
+          <h2>Identidad</h2>
         </div>
         <p className="muted small">
-          Estos datos se muestran en el portal de socios: logos, color destacado y forma de contacto.
+          Logos y color destacado que se muestran en el portal de socios.
         </p>
 
         <div className="settings-logos">
           <div className="settings-logo-field">
-            <span className="settings-logo-label">Logo principal</span>
             <div className="settings-logo-row">
               <LogoPlaceholder className="settings-logo-preview" src={settings?.logo_primary_url} />
-              <FilePicker
-                id="logo-primary"
-                file={null}
-                onChange={(f) => handleLogoChange("primary", f)}
-                accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                buttonLabel={logoUploading === "primary" ? "Subiendo..." : "Cambiar logo"}
-              />
-              {settings?.logo_primary_url && (
-                <button
-                  type="button"
-                  className="btn-danger"
-                  disabled={logoUploading === "primary"}
-                  onClick={() => handleLogoRemove("primary")}
-                >
-                  Eliminar
-                </button>
-              )}
+              <div className="settings-logo-info">
+                <span className="settings-logo-label">Logo principal</span>
+                <div className="settings-logo-actions">
+                  <FilePicker
+                    id="logo-primary"
+                    file={null}
+                    onChange={(f) => handleLogoChange("primary", f)}
+                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                    buttonLabel={logoUploading === "primary" ? "Subiendo..." : "Subir imagen"}
+                  />
+                  {settings?.logo_primary_url && (
+                    <button
+                      type="button"
+                      className="btn-danger"
+                      disabled={logoUploading === "primary"}
+                      onClick={() => handleLogoRemove("primary")}
+                    >
+                      Eliminar
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
           <div className="settings-logo-field">
-            <span className="settings-logo-label">Logo secundario</span>
             <div className="settings-logo-row">
               <LogoPlaceholder className="settings-logo-preview" src={settings?.logo_secondary_url} />
-              <FilePicker
-                id="logo-secondary"
-                file={null}
-                onChange={(f) => handleLogoChange("secondary", f)}
-                accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                buttonLabel={logoUploading === "secondary" ? "Subiendo..." : "Cambiar logo"}
-              />
-              {settings?.logo_secondary_url && (
-                <button
-                  type="button"
-                  className="btn-danger"
-                  disabled={logoUploading === "secondary"}
-                  onClick={() => handleLogoRemove("secondary")}
-                >
-                  Eliminar
-                </button>
-              )}
+              <div className="settings-logo-info">
+                <span className="settings-logo-label">Logo secundario</span>
+                <div className="settings-logo-actions">
+                  <FilePicker
+                    id="logo-secondary"
+                    file={null}
+                    onChange={(f) => handleLogoChange("secondary", f)}
+                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                    buttonLabel={logoUploading === "secondary" ? "Subiendo..." : "Subir imagen"}
+                  />
+                  {settings?.logo_secondary_url && (
+                    <button
+                      type="button"
+                      className="btn-danger"
+                      disabled={logoUploading === "secondary"}
+                      onClick={() => handleLogoRemove("secondary")}
+                    >
+                      Eliminar
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </div>
         {logoError && <p className="error">{logoError}</p>}
 
-        <form className="settings-form" onSubmit={handleSaveSettings}>
+        <div className="settings-form">
           <label>
             Color destacado
             <div className="color-field">
@@ -387,7 +660,39 @@ export default function AdminDashboard() {
                 placeholder="#2563eb"
               />
             </div>
+            <div className="color-swatches">
+              {ACCENT_SWATCHES.map((hex) => (
+                <button
+                  key={hex}
+                  type="button"
+                  aria-label={hex}
+                  className={`color-swatch${settingsForm.primary_color.toLowerCase() === hex ? " is-active" : ""}`}
+                  style={{ background: hex }}
+                  onClick={() => setSettingsForm((f) => ({ ...f, primary_color: hex }))}
+                />
+              ))}
+            </div>
           </label>
+          <div className="config-color-preview">
+            <span className="muted small">Vista previa en el portal</span>
+            <div className="color-preview-box" style={{ ["--accent" as string]: settingsForm.primary_color }}>
+              <span>Total a pagar</span>
+              <span className="color-preview-amount">{money(12500)}</span>
+              <span className="color-preview-btn">Descargar boleta (PDF)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <h2>Contacto</h2>
+        </div>
+        <p className="muted small">
+          Datos de contacto que se muestran en el portal de socios.
+        </p>
+
+        <div className="settings-form">
           <label>
             Email de contacto
             <input
@@ -426,7 +731,267 @@ export default function AdminDashboard() {
           </button>
           {settingsSaved && <p className="success">Configuración guardada.</p>}
           {settingsError && <p className="error">{settingsError}</p>}
+        </div>
+      </div>
+      </form>
+      )}
+
+      {section === "config" && (
+      <div className="card">
+        <div className="card-head">
+          <h2>Mercado Pago</h2>
+        </div>
+        <p className="muted small">
+          Conectá la cuenta de Mercado Pago de la cooperativa para que los socios puedan pagar sus
+          boletas online. El dinero se acredita directamente en tu cuenta de Mercado Pago — Coopera
+          nunca lo recibe ni lo retiene.
+        </p>
+
+        {mpResult === "success" && <p className="success">Mercado Pago conectado correctamente.</p>}
+        {mpResult === "error" && (
+          <p className="error">No se pudo completar la conexión con Mercado Pago. Probá de nuevo.</p>
+        )}
+
+        {mpStatus && !mpStatus.configured && (
+          <p className="muted small">
+            Esta instancia de Coopera todavía no tiene configurada la integración con Mercado Pago
+            (falta de lado del servidor). Contactá al equipo de Coopera.
+          </p>
+        )}
+
+        {mpStatus?.configured && !isOwner && (
+          <p className="muted small">
+            Solo un administrador con rol "owner" puede conectar o desconectar Mercado Pago.
+          </p>
+        )}
+
+        {mpStatus?.configured && isOwner && (
+          <div className="mp-connect">
+            {mpStatus.connected ? (
+              <>
+                <p className="success">
+                  Conectado {mpStatus.mp_user_id ? `(cuenta MP #${mpStatus.mp_user_id})` : ""}
+                </p>
+                <button type="button" className="btn-danger" disabled={mpLoading} onClick={handleMpDisconnect}>
+                  {mpLoading ? "Desconectando..." : "Desconectar Mercado Pago"}
+                </button>
+              </>
+            ) : (
+              <button type="button" disabled={mpLoading} onClick={handleMpConnect}>
+                {mpLoading ? "Redirigiendo..." : "Conectar con Mercado Pago"}
+              </button>
+            )}
+          </div>
+        )}
+        {mpError && <p className="error">{mpError}</p>}
+      </div>
+      )}
+
+      {section === "config" && (
+      <div className="card">
+        <div className="card-head">
+          <h2>Helipagos</h2>
+        </div>
+        <p className="muted small">
+          Conectá el token de Helipagos de la cooperativa para que los socios puedan pagar sus
+          boletas online (tarjeta, código de barras, QR). A diferencia de Mercado Pago, no hace
+          falta autorizar nada: pegá el token y el apikey de webhook que te dio Helipagos al darte
+          de alta.
+        </p>
+
+        {helipagosStatus && !isOwner && (
+          <p className="muted small">
+            Solo un administrador con rol "owner" puede conectar o desconectar Helipagos.
+          </p>
+        )}
+
+        {helipagosStatus?.connected && isOwner && (
+          <div className="mp-connect">
+            <p className="success">
+              Conectado ({helipagosStatus.environment === "production" ? "producción" : "sandbox"})
+            </p>
+            <button
+              type="button"
+              className="btn-danger"
+              disabled={helipagosLoading}
+              onClick={handleHelipagosDisconnect}
+            >
+              {helipagosLoading ? "Desconectando..." : "Desconectar Helipagos"}
+            </button>
+          </div>
+        )}
+
+        {helipagosStatus && !helipagosStatus.connected && isOwner && (
+          <form className="settings-form" onSubmit={handleHelipagosConnect}>
+            <label>
+              Token
+              <input
+                value={helipagosForm.token}
+                onChange={(e) => setHelipagosForm((f) => ({ ...f, token: e.target.value }))}
+                placeholder="Token Bearer provisto por Helipagos"
+                required
+              />
+            </label>
+            <label>
+              Apikey de webhook
+              <input
+                value={helipagosForm.webhook_apikey}
+                onChange={(e) => setHelipagosForm((f) => ({ ...f, webhook_apikey: e.target.value }))}
+                placeholder="Valor del header 'apikey' que envía Helipagos"
+                required
+              />
+            </label>
+            <label>
+              Entorno
+              <select
+                value={helipagosForm.environment}
+                onChange={(e) =>
+                  setHelipagosForm((f) => ({
+                    ...f,
+                    environment: e.target.value as "sandbox" | "production",
+                  }))
+                }
+              >
+                <option value="sandbox">Sandbox (pruebas)</option>
+                <option value="production">Producción</option>
+              </select>
+            </label>
+            <button type="submit" disabled={helipagosLoading}>
+              {helipagosLoading ? "Conectando..." : "Conectar Helipagos"}
+            </button>
+          </form>
+        )}
+        {helipagosError && <p className="error">{helipagosError}</p>}
+      </div>
+      )}
+
+      {section === "config" && isOwner && (
+      <div className="card admins-card">
+        <div className="card-head">
+          <h2>Administradores</h2>
+        </div>
+
+        <div className="role-legend">
+          <div className="role-legend-item">
+            <span className="role-chip role-chip-owner">
+              <Crown size={13} aria-hidden="true" /> owner
+            </span>
+            <p className="muted small">Conecta o desconecta Mercado Pago y gestiona otros administradores.</p>
+          </div>
+          <div className="role-legend-item">
+            <span className="role-chip role-chip-staff">
+              <UserCog size={13} aria-hidden="true" /> staff
+            </span>
+            <p className="muted small">Accede al resto del panel: socios, importaciones y boletas.</p>
+          </div>
+        </div>
+
+        <table className="socios-table admins-table">
+          <thead>
+            <tr>
+              <th>Email</th>
+              <th>Rol</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {admins.map((a) => {
+              const isYou = a.id === currentAdmin?.id;
+              return (
+                <tr key={a.id}>
+                  <td data-label="Email">
+                    {a.email}
+                    {isYou && <span className="you-badge">Tú</span>}
+                  </td>
+                  <td data-label="Rol">
+                    <select
+                      className={`role-select role-select-${a.role}`}
+                      value={a.role}
+                      onChange={(e) => handleChangeAdminRole(a, e.target.value as AdminRole)}
+                      disabled={isYou}
+                      title={isYou ? "No podés modificar tu propio rol" : undefined}
+                    >
+                      <option value="owner">owner</option>
+                      <option value="staff">staff</option>
+                    </select>
+                  </td>
+                  <td className="socios-table-actions">
+                    <button
+                      type="button"
+                      className="btn-danger"
+                      disabled={isYou}
+                      title={isYou ? "No podés eliminar tu propia cuenta" : undefined}
+                      onClick={() => handleRemoveAdmin(a)}
+                    >
+                      <Trash2 size={14} aria-hidden="true" />
+                      Eliminar
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+
+        <div className="admins-divider" />
+
+        <div className="admins-invite-head">
+          <UserPlus size={16} aria-hidden="true" />
+          <h3>Invitar nuevo administrador</h3>
+        </div>
+        <form className="settings-form" onSubmit={handleCreateAdmin}>
+          <label>
+            Email
+            <input
+              type="email"
+              value={newAdminEmail}
+              onChange={(e) => setNewAdminEmail(e.target.value)}
+              required
+            />
+          </label>
+          <label>
+            Contraseña
+            <input
+              type="password"
+              value={newAdminPassword}
+              onChange={(e) => setNewAdminPassword(e.target.value)}
+              required
+              minLength={8}
+            />
+          </label>
+          <label>
+            Rol
+            <select value={newAdminRole} onChange={(e) => setNewAdminRole(e.target.value as AdminRole)}>
+              <option value="staff">staff</option>
+              <option value="owner">owner</option>
+            </select>
+          </label>
+          <button type="submit" disabled={adminsSaving}>
+            {adminsSaving ? "Creando..." : "Invitar administrador"}
+          </button>
         </form>
+        {adminsError && <p className="error">{adminsError}</p>}
+      </div>
+      )}
+
+      {section === "config" && isOwner && (
+      <div className="card">
+        <div className="card-head">
+          <h2>Actividad reciente</h2>
+        </div>
+        <p className="muted small">Últimas acciones sensibles realizadas en esta cooperativa.</p>
+        {auditLog.length === 0 && <p className="muted small">Todavía no hay actividad registrada.</p>}
+        {auditLog.length > 0 && (
+          <ul className="audit-log-list">
+            {auditLog.map((entry) => (
+              <li key={entry.id}>
+                <span className="muted small">{new Date(entry.created_at).toLocaleString("es-AR")}</span>{" "}
+                — <strong>{entry.actor_email}</strong> ({entry.actor_type}): {entry.action}
+                {entry.details ? ` — ${entry.details}` : ""}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
       )}
 
@@ -562,11 +1127,26 @@ export default function AdminDashboard() {
         </table>
       </div>
       )}
+        </div>
+        </main>
+      </div>
 
       <Drawer
         open={drawerOpen}
         onClose={closeInvoiceDrawer}
-        title={drawerMember ? `Facturas de ${drawerMember.nombre}` : "Facturas"}
+        title={
+          drawerMember ? (
+            <div className="drawer-head-info">
+              <span className="drawer-head-number">Socio N° {drawerMember.numero_socio}</span>
+              <span className="drawer-head-name">{drawerMember.nombre}</span>
+              <span className="drawer-head-balance">
+                Saldo adeudado: <strong>{money(drawerMember.saldo_total)}</strong>
+              </span>
+            </div>
+          ) : (
+            "Facturas"
+          )
+        }
       >
         {invoicesLoading && <p className="muted small">Cargando facturas...</p>}
         {invoicesError && <p className="error">{invoicesError}</p>}

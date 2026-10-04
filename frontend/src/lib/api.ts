@@ -58,6 +58,38 @@ export interface MemberAccount {
   mp_alias: string | null;
   mp_cbu: string | null;
   mp_titular: string | null;
+  mp_connected: boolean;
+  helipagos_connected: boolean;
+}
+
+export interface MpStatus {
+  configured: boolean;
+  connected: boolean;
+  mp_user_id: string | null;
+}
+
+export interface HelipagosStatus {
+  connected: boolean;
+  environment: "sandbox" | "production";
+}
+
+export type AdminRole = "owner" | "staff";
+
+export interface AdminUserOut {
+  id: number;
+  email: string;
+  role: AdminRole;
+  created_at: string;
+}
+
+export interface AuditLogEntry {
+  id: number;
+  actor_type: "admin" | "platform";
+  actor_email: string;
+  action: string;
+  target: string | null;
+  details: string | null;
+  created_at: string;
 }
 
 export interface MemberRow {
@@ -116,6 +148,30 @@ export function lookupMember(slug: string, numeroSocio: string, identificador: s
 export function boletaUrl(slug: string, numeroSocio: string, identificador: string) {
   const params = new URLSearchParams({ numero_socio: numeroSocio, identificador });
   return `${API_BASE}/api/t/${slug}/boleta.pdf?${params.toString()}`;
+}
+
+export function payInvoice(
+  slug: string,
+  invoiceId: number,
+  numeroSocio: string,
+  identificador: string,
+) {
+  return request<{ init_point: string }>(`/api/t/${slug}/invoices/${invoiceId}/pay`, {
+    method: "POST",
+    body: JSON.stringify({ numero_socio: numeroSocio, identificador }),
+  });
+}
+
+export function payInvoiceHelipagos(
+  slug: string,
+  invoiceId: number,
+  numeroSocio: string,
+  identificador: string,
+) {
+  return request<{ init_point: string }>(`/api/t/${slug}/invoices/${invoiceId}/pay-helipagos`, {
+    method: "POST",
+    body: JSON.stringify({ numero_socio: numeroSocio, identificador }),
+  });
 }
 
 export function adminLogin(slug: string, email: string, password: string) {
@@ -194,6 +250,103 @@ export async function uploadLogo(slug: string, token: string, kind: "primary" | 
 export function deleteLogo(slug: string, token: string, kind: "primary" | "secondary") {
   return request<TenantSettings>(`/api/t/${slug}/admin/logo?kind=${kind}`, {
     method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function getMpStatus(slug: string, token: string) {
+  return request<MpStatus>(`/api/t/${slug}/admin/mp/status`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function getMpConnectUrl(slug: string, token: string) {
+  return request<{ url: string }>(`/api/t/${slug}/admin/mp/connect-url`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function disconnectMp(slug: string, token: string) {
+  return request<MpStatus>(`/api/t/${slug}/admin/mp`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function getHelipagosStatus(slug: string, token: string) {
+  return request<HelipagosStatus>(`/api/t/${slug}/admin/helipagos/status`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function connectHelipagos(
+  slug: string,
+  token: string,
+  payload: { token: string; webhook_apikey: string; environment: "sandbox" | "production" },
+) {
+  return request<HelipagosStatus>(`/api/t/${slug}/admin/helipagos`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function disconnectHelipagos(slug: string, token: string) {
+  return request<HelipagosStatus>(`/api/t/${slug}/admin/helipagos`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function getCurrentAdmin(slug: string, token: string) {
+  return request<AdminUserOut>(`/api/t/${slug}/admin/me`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function listAdmins(slug: string, token: string) {
+  return request<AdminUserOut[]>(`/api/t/${slug}/admin/admins`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function createAdmin(
+  slug: string,
+  token: string,
+  payload: { email: string; password: string; role: AdminRole },
+) {
+  return request<AdminUserOut>(`/api/t/${slug}/admin/admins`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateAdminRole(slug: string, token: string, adminId: number, role: AdminRole) {
+  return request<AdminUserOut>(`/api/t/${slug}/admin/admins/${adminId}/role`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ role }),
+  });
+}
+
+export function deleteAdmin(slug: string, token: string, adminId: number) {
+  return request<AdminUserOut>(`/api/t/${slug}/admin/admins/${adminId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function resetAdminPassword(slug: string, token: string, adminId: number, password: string) {
+  return request<AdminUserOut>(`/api/t/${slug}/admin/admins/${adminId}/reset-password`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ password }),
+  });
+}
+
+export function getAuditLog(slug: string, token: string) {
+  return request<AuditLogEntry[]>(`/api/t/${slug}/admin/audit-log`, {
     headers: { Authorization: `Bearer ${token}` },
   });
 }
