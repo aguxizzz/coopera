@@ -29,8 +29,10 @@ from app.schemas import (
 )
 from app.services.audit import log_action
 from app.services.qr_login import claim as claim_qr_session, get_qr_session, resolve_status
-from app.services.readings import register_reading
+from app.services.readings import register_reading, update_reading
 from app.services.storage import UnsupportedPhotoType, upload_reading_photo
+
+import datetime as dt
 
 _UPLOAD_CHUNK_SIZE = 1024 * 1024
 
@@ -217,6 +219,7 @@ def list_meters(
                 ultima_lectura=last.valor if last else None,
                 ultima_lectura_fecha=last.created_at if last else None,
                 ultima_lectura_anomala=last.anomala if last else False,
+                ultima_lectura_id=last.id if last else None,
             )
         )
     return rows
@@ -284,3 +287,67 @@ def list_meter_readings(
         .order_by(Reading.created_at.desc())
         .all()
     )
+
+
+def _get_reading(db: Session, meter_id: int, reading_id: int) -> Reading:
+    reading = (
+        db.query(Reading)
+        .filter(Reading.id == reading_id, Reading.meter_id == meter_id)
+        .first()
+    )
+    if reading is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Lectura no encontrada")
+    return reading
+
+
+@router.patch("/meters/{meter_id}/readings/{reading_id}", response_model=ReadingOut)
+async def update_reading_endpoint(
+    tenant_slug: str,
+    meter_id: int,
+    reading_id: int,
+    valor: float = Form(...),
+    ocr_valor: str | None = Form(None),
+    ocr_confianza: float | None = Form(None),
+    foto: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+    gestor: Gestor = Depends(get_current_gestor),
+):
+    """Corrects a reading the gestor already loaded, instead of stacking a
+    second one — services are billed off a single monthly reading, so
+    letting a misread-digit fix pile up a duplicate instead of overwriting
+    the original would double-count the cycle. Only readings still inside
+    the current calendar month (i.e. not yet closed for billing) can be
+    touched this way; anything older needs an admin correction."""
+    tenant = get_tenant(tenant_slug, db)
+    meter = _get_meter(db, tenant.id, meter_id)
+    reading = _get_reading(db, meter.id, reading_id)
+
+    now = dt.datetime.utcnow()
+    if reading.created_at.year != now.year or reading.created_at.month != now.month:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Esta lectura ya no pertenece al ciclo actual y no se puede editar desde la app",
+        )
+
+    foto_url = None
+    if foto is not None:
+        content = await _read_capped(foto, settings.max_reading_photo_bytes)
+        try:
+            foto_url = upload_reading_photo(
+                tenant.slug, foto.filename or "lectura.jpg", foto.content_type or "", content
+            )
+        except UnsupportedPhotoType as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+
+    reading = update_reading(
+        db,
+        reading,
+        valor,
+        foto_url=foto_url,
+        ocr_valor=ocr_valor,
+        ocr_confianza=ocr_confianza,
+    )
+    log_action(
+        db, tenant, gestor, "gestor.reading_updated", target=f"reading:{reading.id}", actor_type="gestor"
+    )
+    return reading

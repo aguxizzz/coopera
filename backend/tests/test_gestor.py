@@ -257,6 +257,59 @@ def test_create_reading_unknown_meter_404(client, tenant, gestor_headers):
     assert resp.status_code == 404
 
 
+def test_update_reading_corrects_value_and_recomputes_consumo(client, tenant, gestor_headers, meter):
+    client.post(
+        f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings",
+        headers=gestor_headers, data={"valor": 100},
+    )
+    created = client.post(
+        f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings",
+        headers=gestor_headers, data={"valor": 150},
+    ).json()
+
+    resp = client.patch(
+        f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings/{created['id']}",
+        headers=gestor_headers, data={"valor": 130},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["valor"] == 130.0
+    assert body["valor_anterior"] == 100.0
+    assert body["consumo"] == 30
+
+    rows = client.get(f"/api/t/{tenant.slug}/gestor/meters", headers=gestor_headers).json()
+    assert rows[0]["ultima_lectura"] == 130.0
+
+
+def test_update_reading_unknown_reading_404(client, tenant, gestor_headers, meter):
+    resp = client.patch(
+        f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings/999",
+        headers=gestor_headers, data={"valor": 10},
+    )
+    assert resp.status_code == 404
+
+
+def test_update_reading_outside_current_cycle_is_rejected(client, tenant, gestor_headers, meter, db_session):
+    import datetime as dt
+
+    from app.models import Reading
+
+    created = client.post(
+        f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings",
+        headers=gestor_headers, data={"valor": 100},
+    ).json()
+
+    reading = db_session.query(Reading).filter(Reading.id == created["id"]).first()
+    reading.created_at = dt.datetime.utcnow() - dt.timedelta(days=45)
+    db_session.commit()
+
+    resp = client.patch(
+        f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings/{created['id']}",
+        headers=gestor_headers, data={"valor": 130},
+    )
+    assert resp.status_code == 409
+
+
 def test_inactive_gestor_excluded_from_device_login_profiles(client, tenant, gestor, db_session):
     gestor.activo = False
     db_session.commit()

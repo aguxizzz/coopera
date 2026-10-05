@@ -306,6 +306,7 @@ class MeterOut(BaseModel):
     ultima_lectura: float | None
     ultima_lectura_fecha: dt.datetime | None
     ultima_lectura_anomala: bool = False
+    ultima_lectura_id: int | None = None
 
 
 class MeterCreate(BaseModel):

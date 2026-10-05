@@ -58,6 +58,48 @@ def register_reading(
     return reading
 
 
+def update_reading(
+    db: Session,
+    reading: Reading,
+    valor: float,
+    foto_url: str | None = None,
+    ocr_valor: str | None = None,
+    ocr_confianza: float | None = None,
+) -> Reading:
+    """Corrects a reading the gestor already submitted this same cycle
+    (e.g. a misread digit caught right after saving), recomputing consumo/
+    anomala exactly like register_reading would — but against the history
+    excluding this reading itself, since editing it shouldn't let it count
+    as its own previous value."""
+    history = (
+        db.query(Reading)
+        .filter(Reading.meter_id == reading.meter_id, Reading.id != reading.id)
+        .order_by(Reading.created_at.desc())
+        .limit(HISTORY_SIZE)
+        .all()
+    )
+
+    valor_anterior = history[0].valor if history else None
+    consumo = (valor - valor_anterior) if valor_anterior is not None else None
+    anomala = _is_anomalous(consumo, history)
+
+    reading.valor = valor
+    reading.valor_anterior = valor_anterior
+    reading.consumo = consumo
+    reading.anomala = anomala
+    if foto_url is not None:
+        reading.foto_url = foto_url
+    if ocr_valor is not None:
+        reading.ocr_valor = ocr_valor
+    if ocr_confianza is not None:
+        reading.ocr_confianza = ocr_confianza
+
+    db.add(reading)
+    db.commit()
+    db.refresh(reading)
+    return reading
+
+
 def _is_anomalous(consumo: float | None, history: list[Reading]) -> bool:
     if consumo is None:
         return False  # no hay lectura previa: no hay base de comparación
