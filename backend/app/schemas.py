@@ -67,6 +67,29 @@ class GestorSelectProfile(BaseModel):
     gestor_id: int
 
 
+QrStatus = Literal["pending", "claimed", "approved", "denied", "expired"]
+
+
+class GestorQrStartOut(BaseModel):
+    code: str
+    expires_at: dt.datetime
+
+
+class GestorQrAdminStatusOut(BaseModel):
+    status: QrStatus
+    expires_at: dt.datetime
+
+
+class GestorQrClaimOut(BaseModel):
+    status: QrStatus
+
+
+class GestorQrPollOut(BaseModel):
+    status: QrStatus
+    device_token: str | None = None
+    profiles: list[GestorProfileOut] | None = None
+
+
 class MemberLookupRequest(BaseModel):
     numero_socio: str
     identificador: str

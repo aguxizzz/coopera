@@ -19,6 +19,8 @@ from app.schemas import (
     GestorDeviceLogin,
     GestorDeviceLoginResponse,
     GestorProfileOut,
+    GestorQrClaimOut,
+    GestorQrPollOut,
     GestorRefreshRequest,
     GestorSelectProfile,
     GestorTokenResponse,
@@ -26,6 +28,7 @@ from app.schemas import (
     ReadingOut,
 )
 from app.services.audit import log_action
+from app.services.qr_login import claim as claim_qr_session, get_qr_session, resolve_status
 from app.services.readings import register_reading
 from app.services.storage import UnsupportedPhotoType, upload_reading_photo
 
@@ -115,6 +118,49 @@ def select_profile(
         actor_type="gestor",
     )
     return GestorTokenResponse(access_token=token, refresh_token=refresh_token)
+
+
+@router.post("/qr-session/{code}/claim", response_model=GestorQrClaimOut)
+@limiter.limit("20/minute")
+def claim_qr(request: Request, tenant_slug: str, code: str, db: Session = Depends(get_db)):
+    """Called by the gestor app right after it scans the admin panel's QR.
+    Doesn't hand back anything sensitive — it only flags the code as
+    "claimed" so the admin sees a confirm/deny prompt. See
+    app/services/qr_login.py for why that human approval step matters."""
+    tenant = get_tenant(tenant_slug, db)
+    session = get_qr_session(db, tenant.id, code)
+    return GestorQrClaimOut(status=claim_qr_session(db, session))
+
+
+@router.get("/qr-session/{code}", response_model=GestorQrPollOut)
+@limiter.limit("120/minute")
+def poll_qr(request: Request, tenant_slug: str, code: str, db: Session = Depends(get_db)):
+    """Polled by the gestor app while it waits for an admin to approve the
+    scan. Returns device_token + profiles exactly once (the same shape
+    /device-login returns), right after an admin approves — a second poll
+    after that gets "expired" instead of being able to replay the token."""
+    tenant = get_tenant(tenant_slug, db)
+    session = get_qr_session(db, tenant.id, code)
+    status_now = resolve_status(db, session)
+
+    if status_now == "approved" and not session.consumed:
+        session.consumed = True
+        db.add(session)
+        db.commit()
+        profiles = (
+            db.query(Gestor)
+            .filter(Gestor.tenant_id == tenant.id, Gestor.activo.is_(True))
+            .order_by(Gestor.nombre)
+            .all()
+        )
+        return GestorQrPollOut(
+            status="approved",
+            device_token=session.device_token,
+            profiles=[GestorProfileOut(id=g.id, nombre=g.nombre) for g in profiles],
+        )
+    if status_now == "approved":  # already consumed by an earlier poll
+        return GestorQrPollOut(status="expired")
+    return GestorQrPollOut(status=status_now)
 
 
 @router.post("/refresh", response_model=GestorTokenResponse)

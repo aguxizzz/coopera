@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     # endpoints directly.
     jwt_device_expire_minutes: int = 15
 
+    # QR "scan to log in" alternative to the shared password: how long a
+    # generated code (and each subsequent claimed/approved state) stays
+    # valid before the admin has to generate a new one. Kept short since the
+    # QR is shown on an admin's screen in person — see
+    # app/services/qr_login.py.
+    gestor_qr_expire_minutes: int = 3
+
     cors_origins: str = "http://localhost:5173"
 
     # Public URL this API is reachable at. Used to build absolute URLs for

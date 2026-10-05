@@ -336,3 +336,95 @@ def test_create_reading_rejects_oversized_photo(client, tenant, gestor_headers, 
         files={"foto": ("lectura.jpg", b"\xff\xd8\xff" + b"0" * 100, "image/jpeg")},
     )
     assert resp.status_code == 413
+
+
+# --- QR login ----------------------------------------------------------
+
+
+def _start_qr(client, tenant_slug, admin_headers):
+    return client.post(f"/api/t/{tenant_slug}/admin/gestor-qr/start", headers=admin_headers)
+
+
+def test_qr_login_full_happy_path(client, tenant, admin_headers, gestor):
+    code = _start_qr(client, tenant.slug, admin_headers).json()["code"]
+
+    # Nobody has scanned it yet.
+    status_resp = client.get(f"/api/t/{tenant.slug}/admin/gestor-qr/{code}/status", headers=admin_headers)
+    assert status_resp.json()["status"] == "pending"
+
+    # The gestor app scans and claims it.
+    claim_resp = client.post(f"/api/t/{tenant.slug}/gestor/qr-session/{code}/claim")
+    assert claim_resp.status_code == 200
+    assert claim_resp.json()["status"] == "claimed"
+
+    # The admin now sees it waiting for confirmation and approves.
+    status_resp = client.get(f"/api/t/{tenant.slug}/admin/gestor-qr/{code}/status", headers=admin_headers)
+    assert status_resp.json()["status"] == "claimed"
+    approve_resp = client.post(f"/api/t/{tenant.slug}/admin/gestor-qr/{code}/approve", headers=admin_headers)
+    assert approve_resp.status_code == 200
+    assert approve_resp.json()["status"] == "approved"
+
+    # The gestor app polls and gets the device_token + profiles exactly once.
+    poll_resp = client.get(f"/api/t/{tenant.slug}/gestor/qr-session/{code}")
+    body = poll_resp.json()
+    assert body["status"] == "approved"
+    assert body["device_token"]
+    assert body["profiles"] == [{"id": gestor.id, "nombre": gestor.nombre}]
+
+    # A second poll can't replay the token.
+    poll_again = client.get(f"/api/t/{tenant.slug}/gestor/qr-session/{code}")
+    assert poll_again.json()["status"] == "expired"
+
+    # And the device_token works for select-profile, same as the password flow.
+    select_resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/select-profile",
+        json={"device_token": body["device_token"], "gestor_id": gestor.id},
+    )
+    assert select_resp.status_code == 200
+    assert select_resp.json()["access_token"]
+
+
+def test_qr_login_admin_can_deny(client, tenant, admin_headers):
+    code = _start_qr(client, tenant.slug, admin_headers).json()["code"]
+    client.post(f"/api/t/{tenant.slug}/gestor/qr-session/{code}/claim")
+
+    deny_resp = client.post(f"/api/t/{tenant.slug}/admin/gestor-qr/{code}/deny", headers=admin_headers)
+    assert deny_resp.json()["status"] == "denied"
+
+    poll_resp = client.get(f"/api/t/{tenant.slug}/gestor/qr-session/{code}")
+    assert poll_resp.json()["status"] == "denied"
+
+
+def test_qr_login_cannot_approve_before_claim(client, tenant, admin_headers):
+    code = _start_qr(client, tenant.slug, admin_headers).json()["code"]
+    resp = client.post(f"/api/t/{tenant.slug}/admin/gestor-qr/{code}/approve", headers=admin_headers)
+    assert resp.status_code == 409
+
+
+def test_qr_login_expires(client, tenant, admin_headers, monkeypatch):
+    monkeypatch.setattr(settings, "gestor_qr_expire_minutes", -1)
+    code = _start_qr(client, tenant.slug, admin_headers).json()["code"]
+
+    claim_resp = client.post(f"/api/t/{tenant.slug}/gestor/qr-session/{code}/claim")
+    assert claim_resp.json()["status"] == "expired"
+
+    status_resp = client.get(f"/api/t/{tenant.slug}/admin/gestor-qr/{code}/status", headers=admin_headers)
+    assert status_resp.json()["status"] == "expired"
+
+
+def test_qr_login_unknown_code_404(client, tenant, admin_headers):
+    resp = client.get(f"/api/t/{tenant.slug}/admin/gestor-qr/not-a-real-code/status", headers=admin_headers)
+    assert resp.status_code == 404
+
+    resp = client.post(f"/api/t/{tenant.slug}/gestor/qr-session/not-a-real-code/claim")
+    assert resp.status_code == 404
+
+
+def test_qr_login_code_scoped_to_tenant(client, tenant, admin_headers, db_session):
+    other_tenant = Tenant(slug="otra-coopera-qr-test", name="Otra Cooperativa")
+    db_session.add(other_tenant)
+    db_session.commit()
+
+    code = _start_qr(client, tenant.slug, admin_headers).json()["code"]
+    resp = client.post(f"/api/t/{other_tenant.slug}/gestor/qr-session/{code}/claim")
+    assert resp.status_code == 404

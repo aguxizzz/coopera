@@ -22,6 +22,8 @@ from app.schemas import (
     GestorActivoUpdate,
     GestorCreate,
     GestorOut,
+    GestorQrAdminStatusOut,
+    GestorQrStartOut,
     GestorSharedPasswordUpdate,
     HelipagosConnectRequest,
     HelipagosStatusOut,
@@ -48,6 +50,13 @@ from app.services.helipagos import save_credentials as save_helipagos_credential
 from app.services.macroclick import disconnect_tenant as disconnect_macroclick_tenant
 from app.services.macroclick import save_credentials as save_macroclick_credentials
 from app.services.mercadopago import MercadoPagoError, build_authorize_url, disconnect_tenant
+from app.services.qr_login import (
+    approve as approve_qr_session,
+    deny as deny_qr_session,
+    get_qr_session,
+    resolve_status as resolve_qr_status,
+    start_session as start_qr_session,
+)
 from app.services.pdf_importer import run_pdf_import_job
 from app.services.storage import UnsupportedLogoType, delete_logo, upload_logo
 
@@ -693,6 +702,71 @@ def update_gestor_activo(
     db.refresh(gestor)
     log_action(db, tenant, admin, "gestor.activo_updated", target=f"gestor:{gestor.id}", details=f"activo={payload.activo}")
     return gestor
+
+
+# --- QR login: alternative to typing the shared password -------------------
+# See app/services/qr_login.py for the full handshake and why the explicit
+# approve/deny step below matters.
+
+
+@router.post("/gestor-qr/start", response_model=GestorQrStartOut)
+@limiter.limit("10/minute")
+def start_gestor_qr(
+    request: Request,
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    session = start_qr_session(db, tenant)
+    return GestorQrStartOut(code=session.code, expires_at=session.expires_at)
+
+
+@router.get("/gestor-qr/{code}/status", response_model=GestorQrAdminStatusOut)
+def gestor_qr_status(
+    tenant_slug: str,
+    code: str,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    session = get_qr_session(db, tenant.id, code)
+    return GestorQrAdminStatusOut(status=resolve_qr_status(db, session), expires_at=session.expires_at)
+
+
+@router.post("/gestor-qr/{code}/approve", response_model=GestorQrAdminStatusOut)
+def approve_gestor_qr(
+    tenant_slug: str,
+    code: str,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """Only valid once a device has claimed the code — see
+    app/services/qr_login.py. This is the human-in-the-loop step: the admin
+    is confirming "yes, that's my gestor's phone in front of me right now"."""
+    tenant = get_tenant(tenant_slug, db)
+    session = get_qr_session(db, tenant.id, code)
+    if resolve_qr_status(db, session) != "claimed":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "El código no tiene un dispositivo esperando confirmación"
+        )
+    approve_qr_session(db, session)
+    log_action(db, tenant, admin, "gestor.qr_login_approved")
+    return GestorQrAdminStatusOut(status=session.status, expires_at=session.expires_at)
+
+
+@router.post("/gestor-qr/{code}/deny", response_model=GestorQrAdminStatusOut)
+def deny_gestor_qr(
+    tenant_slug: str,
+    code: str,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    session = get_qr_session(db, tenant.id, code)
+    deny_qr_session(db, session)
+    log_action(db, tenant, admin, "gestor.qr_login_denied")
+    return GestorQrAdminStatusOut(status=session.status, expires_at=session.expires_at)
 
 
 # --- Medidores y lecturas ---------------------------------------------------

@@ -274,6 +274,39 @@ class Gestor(Base):
     tenant: Mapped[Tenant] = relationship()
 
 
+class GestorQrSession(Base):
+    """One scan-to-login attempt for the shared gestor login — the QR
+    alternative to typing the cooperativa's shared password (see
+    app/services/qr_login.py, app/routers/gestor.py and
+    app/routers/admin.py's /gestor-qr endpoints, and
+    mobile/src/app/qr-login.tsx).
+
+    An already-authenticated admin generates `code` and the panel renders it
+    as a QR; a gestor's phone scans it and "claims" it; the admin must then
+    explicitly approve that specific claim before the phone receives a
+    device_token. That human-in-the-loop approval is what keeps a code
+    glimpsed or photographed by someone else from being enough on its own —
+    same security property a Netflix-style TV pairing code has.
+
+    `status` moves pending -> claimed -> approved|denied, or snaps to
+    "expired" once `expires_at` passes in any unresolved state (materialized
+    lazily — see resolve_status). `consumed` guards against the device_token
+    being read out more than once after approval."""
+
+    __tablename__ = "gestor_qr_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    device_token: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    consumed: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime)
+
+    tenant: Mapped[Tenant] = relationship()
+
+
 class Meter(Base):
     """A medidor (luz, agua o gas) asociado a un socio. Un socio puede tener
     más de uno (ej: varias propiedades)."""
