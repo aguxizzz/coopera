@@ -36,6 +36,11 @@ import datetime as dt
 
 _UPLOAD_CHUNK_SIZE = 1024 * 1024
 
+# Evidence photos only (no OCR) — a gestor rarely needs more than a couple
+# angles of a dial-style meter, and capping it keeps the multipart upload
+# bounded on the spotty connections these are taken over.
+MAX_READING_PHOTOS = 3
+
 
 async def _read_capped(upload: UploadFile, max_bytes: int) -> bytes:
     """Reads an UploadFile in chunks, bailing out as soon as it exceeds
@@ -54,6 +59,24 @@ async def _read_capped(upload: UploadFile, max_bytes: int) -> bytes:
             )
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+async def _upload_reading_photos(tenant_slug: str, fotos: list[UploadFile]) -> list[str]:
+    if len(fotos) > MAX_READING_PHOTOS:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"Se permiten hasta {MAX_READING_PHOTOS} fotos por lectura"
+        )
+    urls = []
+    for foto in fotos:
+        content = await _read_capped(foto, settings.max_reading_photo_bytes)
+        try:
+            urls.append(
+                upload_reading_photo(tenant_slug, foto.filename or "lectura.jpg", foto.content_type or "", content)
+            )
+        except UnsupportedPhotoType as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    return urls
+
 
 router = APIRouter(prefix="/api/t/{tenant_slug}/gestor", tags=["gestor"])
 
@@ -239,35 +262,23 @@ async def create_reading(
     valor: float = Form(...),
     lat: float | None = Form(None),
     lon: float | None = Form(None),
-    ocr_valor: str | None = Form(None),
-    ocr_confianza: float | None = Form(None),
-    foto: UploadFile | None = File(None),
+    foto: list[UploadFile] | None = File(None),
     db: Session = Depends(get_db),
     gestor: Gestor = Depends(get_current_gestor),
 ):
     tenant = get_tenant(tenant_slug, db)
     meter = _get_meter(db, tenant.id, meter_id)
 
-    foto_url = None
-    if foto is not None:
-        content = await _read_capped(foto, settings.max_reading_photo_bytes)
-        try:
-            foto_url = upload_reading_photo(
-                tenant.slug, foto.filename or "lectura.jpg", foto.content_type or "", content
-            )
-        except UnsupportedPhotoType as exc:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    foto_urls = await _upload_reading_photos(tenant.slug, foto or [])
 
     reading = register_reading(
         db,
         meter,
         valor,
         gestor_id=gestor.id,
-        foto_url=foto_url,
+        foto_urls=foto_urls or None,
         lat=lat,
         lon=lon,
-        ocr_valor=ocr_valor,
-        ocr_confianza=ocr_confianza,
     )
     return reading
 
@@ -306,9 +317,7 @@ async def update_reading_endpoint(
     meter_id: int,
     reading_id: int,
     valor: float = Form(...),
-    ocr_valor: str | None = Form(None),
-    ocr_confianza: float | None = Form(None),
-    foto: UploadFile | None = File(None),
+    foto: list[UploadFile] | None = File(None),
     db: Session = Depends(get_db),
     gestor: Gestor = Depends(get_current_gestor),
 ):
@@ -329,23 +338,13 @@ async def update_reading_endpoint(
             "Esta lectura ya no pertenece al ciclo actual y no se puede editar desde la app",
         )
 
-    foto_url = None
-    if foto is not None:
-        content = await _read_capped(foto, settings.max_reading_photo_bytes)
-        try:
-            foto_url = upload_reading_photo(
-                tenant.slug, foto.filename or "lectura.jpg", foto.content_type or "", content
-            )
-        except UnsupportedPhotoType as exc:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    foto_urls = await _upload_reading_photos(tenant.slug, foto or [])
 
     reading = update_reading(
         db,
         reading,
         valor,
-        foto_url=foto_url,
-        ocr_valor=ocr_valor,
-        ocr_confianza=ocr_confianza,
+        foto_urls=foto_urls or None,
     )
     log_action(
         db, tenant, gestor, "gestor.reading_updated", target=f"reading:{reading.id}", actor_type="gestor"

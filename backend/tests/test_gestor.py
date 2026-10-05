@@ -364,7 +364,37 @@ def test_create_reading_accepts_real_jpeg_photo(client, tenant, gestor_headers, 
         files={"foto": ("lectura.jpg", b"\xff\xd8\xff" + b"0" * 50, "image/jpeg")},
     )
     assert resp.status_code == 200
-    assert resp.json()["foto_url"]
+    assert resp.json()["foto_urls"] == [resp.json()["foto_urls"][0]]
+
+
+def test_create_reading_accepts_up_to_three_photos(client, tenant, gestor_headers, meter):
+    resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings",
+        headers=gestor_headers,
+        data={"valor": 100},
+        files=[
+            ("foto", ("a.jpg", b"\xff\xd8\xff" + b"0" * 50, "image/jpeg")),
+            ("foto", ("b.jpg", b"\xff\xd8\xff" + b"1" * 50, "image/jpeg")),
+            ("foto", ("c.jpg", b"\xff\xd8\xff" + b"2" * 50, "image/jpeg")),
+        ],
+    )
+    assert resp.status_code == 200
+    assert len(resp.json()["foto_urls"]) == 3
+
+
+def test_create_reading_rejects_more_than_three_photos(client, tenant, gestor_headers, meter):
+    resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings",
+        headers=gestor_headers,
+        data={"valor": 100},
+        files=[
+            ("foto", ("a.jpg", b"\xff\xd8\xff" + b"0" * 50, "image/jpeg")),
+            ("foto", ("b.jpg", b"\xff\xd8\xff" + b"1" * 50, "image/jpeg")),
+            ("foto", ("c.jpg", b"\xff\xd8\xff" + b"2" * 50, "image/jpeg")),
+            ("foto", ("d.jpg", b"\xff\xd8\xff" + b"3" * 50, "image/jpeg")),
+        ],
+    )
+    assert resp.status_code == 400
 
 
 def test_create_reading_rejects_spoofed_content_type(client, tenant, gestor_headers, meter):

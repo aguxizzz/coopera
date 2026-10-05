@@ -20,11 +20,9 @@ def register_reading(
     meter: Meter,
     valor: float,
     gestor_id: int | None = None,
-    foto_url: str | None = None,
+    foto_urls: list[str] | None = None,
     lat: float | None = None,
     lon: float | None = None,
-    ocr_valor: str | None = None,
-    ocr_confianza: float | None = None,
 ) -> Reading:
     history = (
         db.query(Reading)
@@ -45,9 +43,7 @@ def register_reading(
         valor=valor,
         valor_anterior=valor_anterior,
         consumo=consumo,
-        foto_url=foto_url,
-        ocr_valor=ocr_valor,
-        ocr_confianza=ocr_confianza,
+        foto_urls=foto_urls,
         lat=lat,
         lon=lon,
         anomala=anomala,
@@ -62,9 +58,7 @@ def update_reading(
     db: Session,
     reading: Reading,
     valor: float,
-    foto_url: str | None = None,
-    ocr_valor: str | None = None,
-    ocr_confianza: float | None = None,
+    foto_urls: list[str] | None = None,
 ) -> Reading:
     """Corrects a reading the gestor already submitted this same cycle
     (e.g. a misread digit caught right after saving), recomputing consumo/
@@ -87,12 +81,8 @@ def update_reading(
     reading.valor_anterior = valor_anterior
     reading.consumo = consumo
     reading.anomala = anomala
-    if foto_url is not None:
-        reading.foto_url = foto_url
-    if ocr_valor is not None:
-        reading.ocr_valor = ocr_valor
-    if ocr_confianza is not None:
-        reading.ocr_confianza = ocr_confianza
+    if foto_urls is not None:
+        reading.foto_urls = foto_urls
 
     db.add(reading)
     db.commit()

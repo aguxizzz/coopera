@@ -346,9 +346,11 @@ class Reading(Base):
     valor_anterior: Mapped[float | None] = mapped_column(Float, nullable=True)
     consumo: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    foto_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    ocr_valor: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    ocr_confianza: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Up to 3 photos kept purely as evidence of the reading — most meters
+    # aren't digital (dial-style displays where a digit can read as half one
+    # number, half the next), so OCR on them was unreliable and was dropped;
+    # the gestor always types the value by hand.
+    foto_urls: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
     lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     lon: Mapped[float | None] = mapped_column(Float, nullable=True)

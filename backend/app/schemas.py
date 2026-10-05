@@ -321,8 +321,6 @@ class ReadingCreate(BaseModel):
     valor: float
     lat: float | None = None
     lon: float | None = None
-    ocr_valor: str | None = None
-    ocr_confianza: float | None = None
 
 
 class ReadingOut(BaseModel):
@@ -331,7 +329,7 @@ class ReadingOut(BaseModel):
     valor: float
     valor_anterior: float | None
     consumo: float | None
-    foto_url: str | None
+    foto_urls: list[str] | None
     anomala: bool
     created_at: dt.datetime
 
