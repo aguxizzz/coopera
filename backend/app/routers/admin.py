@@ -238,6 +238,46 @@ def update_invoice_pagado(
     return invoice
 
 
+@router.post("/members/{member_id}/mark-oldest-invoice-paid", response_model=InvoiceOut)
+def mark_oldest_invoice_paid(
+    tenant_slug: str,
+    member_id: int,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    """Atajo para pagos registrados a mano (efectivo, transferencia): marca
+    pagada la factura impaga más vieja del socio, para no obligar al admin a
+    entrar al detalle y elegir el período cuando hay una sola deuda obvia."""
+    tenant = get_tenant(tenant_slug, db)
+    member = (
+        db.query(Member)
+        .filter(Member.id == member_id, Member.tenant_id == tenant.id)
+        .first()
+    )
+    if member is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Socio no encontrado")
+    invoice = (
+        db.query(Invoice)
+        .filter(Invoice.member_id == member.id, Invoice.pagado.is_(False))
+        .order_by(Invoice.period_year, Invoice.period_month)
+        .first()
+    )
+    if invoice is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "El socio no tiene facturas impagas")
+    invoice.pagado = True
+    db.commit()
+    db.refresh(invoice)
+    log_action(
+        db, tenant, _admin, "invoice.pagado_updated",
+        target=f"invoice:{invoice.id}",
+        details=(
+            f"pagado=True (atajo: factura más vieja impaga) | socio={member.nombre} | "
+            f"periodo={invoice.period_month}/{invoice.period_year}"
+        ),
+    )
+    return invoice
+
+
 @router.delete("/members/{member_id}", response_model=DeleteMembersResult)
 def delete_member(
     tenant_slug: str,

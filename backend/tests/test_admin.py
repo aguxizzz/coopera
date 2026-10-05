@@ -168,6 +168,51 @@ def test_update_invoice_pagado_404(client, tenant, admin_headers):
     assert resp.status_code == 404
 
 
+def test_mark_oldest_invoice_paid_picks_oldest_unpaid(client, db_session, tenant, admin_headers, member, invoice, import_batch):
+    from app.models import Invoice
+
+    newer = Invoice(
+        tenant_id=tenant.id,
+        member_id=member.id,
+        import_batch_id=import_batch.id,
+        period_year=2026,
+        period_month=2,
+        consumo=90.0,
+        monto=3800.0,
+        pagado=False,
+    )
+    db_session.add(newer)
+    db_session.commit()
+
+    resp = client.post(
+        f"/api/t/{tenant.slug}/admin/members/{member.id}/mark-oldest-invoice-paid",
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == invoice.id
+    assert body["pagado"] is True
+
+    db_session.refresh(newer)
+    assert newer.pagado is False
+
+
+def test_mark_oldest_invoice_paid_no_debt(client, tenant, admin_headers, member):
+    resp = client.post(
+        f"/api/t/{tenant.slug}/admin/members/{member.id}/mark-oldest-invoice-paid",
+        headers=admin_headers,
+    )
+    assert resp.status_code == 404
+
+
+def test_mark_oldest_invoice_paid_404_for_unknown_member(client, tenant, admin_headers):
+    resp = client.post(
+        f"/api/t/{tenant.slug}/admin/members/99999/mark-oldest-invoice-paid",
+        headers=admin_headers,
+    )
+    assert resp.status_code == 404
+
+
 def test_delete_member(client, tenant, admin_headers, member):
     resp = client.delete(f"/api/t/{tenant.slug}/admin/members/{member.id}", headers=admin_headers)
     assert resp.status_code == 200
