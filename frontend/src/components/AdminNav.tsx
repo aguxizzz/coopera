@@ -16,13 +16,15 @@ const ITEMS: AdminNavItem[] = [
 ];
 
 type AdminNavProps = {
+  variant: "sidebar" | "tabs";
   active: AdminSection;
   onChange: (section: AdminSection) => void;
 };
 
-export default function AdminNav({ active, onChange }: AdminNavProps) {
+export default function AdminNav({ variant, active, onChange }: AdminNavProps) {
   return (
     <>
+      {variant === "sidebar" && (
       <nav className="admin-nav-sidebar" aria-label="Secciones del panel">
         {ITEMS.map(({ key, label, Icon }) => (
           <button
@@ -39,7 +41,9 @@ export default function AdminNav({ active, onChange }: AdminNavProps) {
           </button>
         ))}
       </nav>
+      )}
 
+      {variant === "tabs" && (
       <nav className="admin-nav-pill" aria-label="Secciones del panel">
         {ITEMS.map(({ key, label, Icon }) => (
           <button
@@ -56,6 +60,7 @@ export default function AdminNav({ active, onChange }: AdminNavProps) {
           </button>
         ))}
       </nav>
+      )}
     </>
   );
 }
