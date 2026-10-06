@@ -365,3 +365,81 @@ class Reading(Base):
 
     meter: Mapped[Meter] = relationship(back_populates="readings")
     gestor: Mapped[Gestor | None] = relationship()
+
+
+class Route(Base):
+    """A planned walk through a set of meters (ruta de lectura), ordered by
+    RouteStop.orden. Created by hand by an admin/gestor, or generated
+    automatically (see app/services/routes.py). `gestor_id` is an optional
+    default assignee: null means any gestor may pick it up. Editing a route
+    never affects a recorrido already in progress, since starting one
+    snapshots the stops into RouteRunStop."""
+
+    __tablename__ = "routes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    nombre: Mapped[str] = mapped_column(String(120))
+    gestor_id: Mapped[int | None] = mapped_column(ForeignKey("gestores.id"), nullable=True)
+    origen: Mapped[str] = mapped_column(String(16), default="manual")  # manual | auto
+    activo: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    gestor: Mapped[Gestor | None] = relationship()
+    stops: Mapped[list["RouteStop"]] = relationship(
+        back_populates="route", cascade="all, delete-orphan", order_by="RouteStop.orden"
+    )
+
+
+class RouteStop(Base):
+    __tablename__ = "route_stops"
+    __table_args__ = (UniqueConstraint("route_id", "meter_id", name="uq_route_stop_meter"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    route_id: Mapped[int] = mapped_column(ForeignKey("routes.id"), index=True)
+    meter_id: Mapped[int] = mapped_column(ForeignKey("meters.id"))
+    orden: Mapped[int] = mapped_column()
+
+    route: Mapped[Route] = relationship(back_populates="stops")
+    meter: Mapped[Meter] = relationship()
+
+
+class RouteRun(Base):
+    """One gestor actually walking a Route: started from the app, advanced
+    meter by meter. status: en_curso | completado | cancelado."""
+
+    __tablename__ = "route_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    route_id: Mapped[int] = mapped_column(ForeignKey("routes.id"))
+    gestor_id: Mapped[int] = mapped_column(ForeignKey("gestores.id"))
+    status: Mapped[str] = mapped_column(String(16), default="en_curso")
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
+    route: Mapped[Route] = relationship()
+    gestor: Mapped[Gestor] = relationship()
+    stops: Mapped[list["RouteRunStop"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", order_by="RouteRunStop.orden"
+    )
+
+
+class RouteRunStop(Base):
+    """Snapshot of one stop of a RouteRun. status: pendiente | leido |
+    salteado (with `motivo`, e.g. "nadie en casa")."""
+
+    __tablename__ = "route_run_stops"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("route_runs.id"), index=True)
+    meter_id: Mapped[int] = mapped_column(ForeignKey("meters.id"))
+    orden: Mapped[int] = mapped_column()
+    status: Mapped[str] = mapped_column(String(16), default="pendiente")
+    motivo: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reading_id: Mapped[int | None] = mapped_column(ForeignKey("readings.id"), nullable=True)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
+    run: Mapped[RouteRun] = relationship(back_populates="stops")
+    meter: Mapped[Meter] = relationship()
+    reading: Mapped[Reading | None] = relationship()

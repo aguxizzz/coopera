@@ -8,8 +8,21 @@ from app.auth import create_access_token, get_current_admin, hash_password, requ
 from app.config import settings
 from app.database import get_db
 from app.deps import get_tenant
-from app.models import AdminUser, AuditLog, Gestor, Invoice, Member, Meter, PdfImportJob, Reading, Tenant
+from app.models import (
+    AdminUser,
+    AuditLog,
+    Gestor,
+    Invoice,
+    Member,
+    Meter,
+    PdfImportJob,
+    Reading,
+    Route,
+    RouteRun,
+    Tenant,
+)
 from app.rate_limit import limiter
+from app.services import routes as route_service
 from app.schemas import (
     AdminCreate,
     AdminLogin,
@@ -33,6 +46,11 @@ from app.schemas import (
     MacroclickStatusOut,
     MemberRow,
     MeterCreate,
+    RouteAutoGenerate,
+    RouteCreate,
+    RouteOut,
+    RouteUpdate,
+    RunOut,
     MeterOut,
     MpConnectUrlOut,
     MpStatusOut,
@@ -906,3 +924,129 @@ def list_meter_readings(
         .order_by(Reading.created_at.desc())
         .all()
     )
+
+
+# --- Rutas de lectura --------------------------------------------------------
+
+
+@router.get("/routes", response_model=list[RouteOut])
+def list_routes(
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    routes = db.query(Route).filter(Route.tenant_id == tenant.id).order_by(Route.nombre).all()
+    return [route_service.route_out(r) for r in routes]
+
+
+@router.post("/routes", response_model=RouteOut)
+def create_route(
+    tenant_slug: str,
+    payload: RouteCreate,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    route = route_service.create_route(db, tenant.id, payload.nombre, payload.meter_ids, payload.gestor_id)
+    log_action(db, tenant, admin, "route.created", target=f"route:{route.id}", details=f"nombre={route.nombre}")
+    return route_service.route_out(route)
+
+
+@router.post("/routes/auto-generate", response_model=list[RouteOut])
+def auto_generate_routes(
+    tenant_slug: str,
+    payload: RouteAutoGenerate,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """Proposes (preview=true) or creates routes covering the active meters,
+    grouped by proximity. See app/services/routes.py."""
+    tenant = get_tenant(tenant_slug, db)
+    created = route_service.auto_generate(db, tenant.id, **payload.model_dump())
+    if not payload.preview:
+        log_action(db, tenant, admin, "route.auto_generated", details=f"rutas={len(created)}")
+    return created
+
+
+@router.get("/routes/{route_id}", response_model=RouteOut)
+def get_route(
+    tenant_slug: str,
+    route_id: int,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    return route_service.route_out(route_service.get_route(db, tenant.id, route_id))
+
+
+@router.put("/routes/{route_id}", response_model=RouteOut)
+def update_route(
+    tenant_slug: str,
+    route_id: int,
+    payload: RouteUpdate,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    route = route_service.get_route(db, tenant.id, route_id)
+    if payload.nombre is not None:
+        route.nombre = payload.nombre
+    if payload.activo is not None:
+        route.activo = payload.activo
+    if "gestor_id" in payload.model_fields_set:
+        route_service.check_gestor(db, tenant.id, payload.gestor_id)
+        route.gestor_id = payload.gestor_id
+    if payload.meter_ids is not None:
+        route_service.set_stops(db, route, payload.meter_ids)
+    db.commit()
+    db.refresh(route)
+    log_action(db, tenant, admin, "route.updated", target=f"route:{route.id}")
+    return route_service.route_out(route)
+
+
+@router.delete("/routes/{route_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_route(
+    tenant_slug: str,
+    route_id: int,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    route = route_service.get_route(db, tenant.id, route_id)
+    if db.query(RouteRun.id).filter(RouteRun.route_id == route.id).first():
+        # Past recorridos keep pointing at it as history; deactivate instead.
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "La ruta ya tiene recorridos realizados; desactivala en lugar de borrarla"
+        )
+    db.delete(route)
+    db.commit()
+    log_action(db, tenant, admin, "route.deleted", target=f"route:{route_id}")
+
+
+@router.get("/route-runs", response_model=list[RunOut])
+def list_route_runs(
+    tenant_slug: str,
+    run_status: str | None = None,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    """Progress of recorridos (e.g. ?run_status=en_curso to see who's out
+    reading right now)."""
+    tenant = get_tenant(tenant_slug, db)
+    q = db.query(RouteRun).filter(RouteRun.tenant_id == tenant.id)
+    if run_status:
+        q = q.filter(RouteRun.status == run_status)
+    runs = q.order_by(RouteRun.started_at.desc()).limit(100).all()
+    return [route_service.run_out(db, r) for r in runs]
+
+
+@router.get("/route-runs/{run_id}", response_model=RunOut)
+def get_route_run(
+    tenant_slug: str,
+    run_id: int,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    return route_service.run_out(db, route_service.get_run(db, tenant.id, run_id), include_stops=True)

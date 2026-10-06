@@ -1,7 +1,7 @@
 import datetime as dt
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TenantPublic(BaseModel):
@@ -346,3 +346,96 @@ class AuditLogOut(BaseModel):
     created_at: dt.datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# --- Rutas de lectura -------------------------------------------------------
+
+
+class RouteStopOut(BaseModel):
+    meter_id: int
+    orden: int
+    codigo: str
+    tipo: str
+    direccion: str | None
+    nombre_socio: str
+
+
+class RouteOut(BaseModel):
+    # id is None only for the dry-run output of auto-generation.
+    id: int | None
+    nombre: str
+    gestor_id: int | None
+    gestor_nombre: str | None
+    origen: str
+    activo: bool
+    cantidad_medidores: int
+    paradas: list[RouteStopOut]
+
+
+class RouteCreate(BaseModel):
+    nombre: str = Field(min_length=1, max_length=120)
+    meter_ids: list[int]
+    gestor_id: int | None = None
+
+
+class RouteUpdate(BaseModel):
+    nombre: str | None = Field(default=None, min_length=1, max_length=120)
+    meter_ids: list[int] | None = None
+    # Explicit null unassigns the route, so this one is checked through
+    # model_fields_set rather than "is not None".
+    gestor_id: int | None = None
+    activo: bool | None = None
+
+
+class RouteAutoGenerate(BaseModel):
+    tipo: Literal["luz", "agua", "gas"] | None = None
+    meters_por_ruta: int = Field(default=30, ge=1, le=500)
+    # Only meters with no reading yet in the current calendar month.
+    solo_pendientes: bool = True
+    gestor_id: int | None = None
+    nombre_base: str = Field(default="Ruta", min_length=1, max_length=100)
+    # When true nothing is saved; the proposed routes are just returned.
+    preview: bool = False
+
+
+class RunStopOut(BaseModel):
+    id: int
+    orden: int
+    status: str
+    motivo: str | None
+    meter_id: int
+    codigo: str
+    tipo: str
+    direccion: str | None
+    unidad: str
+    numero_socio: str
+    nombre_socio: str
+    ultima_lectura: float | None
+    reading_id: int | None
+    completed_at: dt.datetime | None
+
+
+class RunOut(BaseModel):
+    id: int
+    route_id: int
+    route_nombre: str
+    gestor_id: int
+    gestor_nombre: str
+    status: str
+    started_at: dt.datetime
+    finished_at: dt.datetime | None
+    total: int
+    leidas: int
+    salteadas: int
+    pendientes: int
+    siguiente: RunStopOut | None
+    paradas: list[RunStopOut] | None = None
+
+
+class RunSkip(BaseModel):
+    motivo: str | None = Field(default=None, max_length=255)
+
+
+class RunStopResult(BaseModel):
+    run: RunOut
+    reading: ReadingOut | None = None
