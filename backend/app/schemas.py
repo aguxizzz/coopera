@@ -1,7 +1,7 @@
 import datetime as dt
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TenantPublic(BaseModel):
@@ -346,3 +346,108 @@ class AuditLogOut(BaseModel):
     created_at: dt.datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# --- Rutas de lectura -------------------------------------------------------
+
+
+class RouteStopOut(BaseModel):
+    meter_id: int
+    orden: int
+    codigo: str
+    tipo: str
+    direccion: str | None
+    nombre_socio: str
+
+
+class RouteOut(BaseModel):
+    # id is None only for the dry-run output of auto-generation.
+    id: int | None
+    nombre: str
+    gestor_id: int | None
+    gestor_nombre: str | None
+    origen: str
+    activo: bool
+    cantidad_medidores: int
+    # Auto-generation only: how many past jornadas this route was inferred
+    # from (null for routes built from address order, and for stored routes).
+    recorridos_base: int | None = None
+    paradas: list[RouteStopOut]
+
+
+class RouteCreate(BaseModel):
+    nombre: str = Field(min_length=1, max_length=120)
+    meter_ids: list[int]
+    gestor_id: int | None = None
+
+
+class RouteUpdate(BaseModel):
+    nombre: str | None = Field(default=None, min_length=1, max_length=120)
+    meter_ids: list[int] | None = None
+    # Explicit null unassigns the route, so this one is checked through
+    # model_fields_set rather than "is not None".
+    gestor_id: int | None = None
+    activo: bool | None = None
+
+
+class RouteAutoGenerate(BaseModel):
+    tipo: Literal["luz", "agua", "gas"] | None = None
+    # A pause longer than this between two readings of the same gestor ends
+    # one jornada and starts the next.
+    gap_horas: float = Field(default=4, ge=1, le=12)
+    # Jornadas with fewer meters than this are ignored as noise.
+    min_medidores: int = Field(default=5, ge=1, le=500)
+    meses_historial: int = Field(default=3, ge=1, le=24)
+    # Also build routes (by address) for meters no past jornada covers.
+    incluir_sin_historial: bool = True
+    # Size of those address-based routes.
+    meters_por_ruta: int = Field(default=30, ge=1, le=500)
+    # Leave out meters already read in the current calendar month.
+    solo_pendientes: bool = False
+    gestor_id: int | None = None
+    nombre_base: str = Field(default="Ruta", min_length=1, max_length=100)
+    # When true nothing is saved; the proposed routes are just returned.
+    preview: bool = False
+
+
+class RunStopOut(BaseModel):
+    id: int
+    orden: int
+    status: str
+    motivo: str | None
+    meter_id: int
+    codigo: str
+    tipo: str
+    direccion: str | None
+    unidad: str
+    numero_socio: str
+    nombre_socio: str
+    ultima_lectura: float | None
+    reading_id: int | None
+    completed_at: dt.datetime | None
+
+
+class RunOut(BaseModel):
+    id: int
+    route_id: int
+    route_nombre: str
+    gestor_id: int
+    gestor_nombre: str
+    status: str
+    started_at: dt.datetime
+    finished_at: dt.datetime | None
+    total: int
+    leidas: int
+    salteadas: int
+    pendientes: int
+    siguiente: RunStopOut | None
+    paradas: list[RunStopOut] | None = None
+
+
+class RunSkip(BaseModel):
+    motivo: str | None = Field(default=None, max_length=255)
+
+
+class RunStopResult(BaseModel):
+    run: RunOut
+    reading: ReadingOut | None = None
