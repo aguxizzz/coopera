@@ -1,3 +1,5 @@
+import datetime as dt
+
 import pytest
 
 from app.auth import create_gestor_access_token
@@ -190,12 +192,41 @@ def test_delete_route_blocked_once_it_has_runs(client, tenant, admin_headers, ge
     assert client.delete(f"{_base(tenant)}/admin/routes/{unused['id']}", headers=admin_headers).status_code == 204
 
 
+def _jornada(db_session, tenant, gestor, meters_in_order, start, minutes=10):
+    """Readings by `gestor`, one every `minutes`, starting at `start`."""
+    for i, m in enumerate(meters_in_order):
+        db_session.add(
+            Reading(
+                tenant_id=tenant.id,
+                meter_id=m.id,
+                gestor_id=gestor.id,
+                valor=i,
+                created_at=start + dt.timedelta(minutes=minutes * i),
+            )
+        )
+    db_session.commit()
+
+
+@pytest.fixture()
+def many_meters(db_session, tenant, member):
+    out = []
+    for i in range(12):
+        m = Meter(tenant_id=tenant.id, member_id=member.id, codigo=f"N-{i:02d}", tipo="luz", direccion=f"Calle {i:02d}")
+        db_session.add(m)
+        out.append(m)
+    db_session.commit()
+    return out
+
+
+def _auto(client, tenant, headers, **body):
+    return client.post(f"{_base(tenant)}/admin/routes/auto-generate", json=body, headers=headers)
+
+
+NOW = dt.datetime.utcnow()
+
+
 def test_auto_generate_preview_does_not_save(client, tenant, admin_headers, meters):
-    resp = client.post(
-        f"{_base(tenant)}/admin/routes/auto-generate",
-        json={"meters_por_ruta": 2, "preview": True},
-        headers=admin_headers,
-    )
+    resp = _auto(client, tenant, admin_headers, meters_por_ruta=2, preview=True)
     assert resp.status_code == 200
     body = resp.json()
     assert [r["cantidad_medidores"] for r in body] == [2, 1]
@@ -203,42 +234,98 @@ def test_auto_generate_preview_does_not_save(client, tenant, admin_headers, mete
     assert client.get(f"{_base(tenant)}/admin/routes", headers=admin_headers).json() == []
 
 
-def test_auto_generate_without_geo_orders_by_address(client, tenant, admin_headers, meters):
-    resp = client.post(
-        f"{_base(tenant)}/admin/routes/auto-generate", json={"meters_por_ruta": 10}, headers=admin_headers
-    )
-    assert resp.status_code == 200
-    (route,) = resp.json()
+def test_auto_generate_without_history_orders_by_address(client, tenant, admin_headers, meters):
+    (route,) = _auto(client, tenant, admin_headers, meters_por_ruta=10).json()
     assert route["origen"] == "auto"
+    assert route["recorridos_base"] is None
     assert [p["direccion"] for p in route["paradas"]] == ["Calle A 10", "Calle B 20", "Calle C 30"]
 
 
-def test_auto_generate_groups_nearby_meters_using_last_location(client, tenant, admin_headers, meters, db_session):
-    # M-1 and M-3 are neighbours; M-2 is far away.
-    coords = {meters[0].id: (-34.6000, -58.4000), meters[1].id: (-34.9000, -58.9000), meters[2].id: (-34.6005, -58.4005)}
-    for mid, (lat, lon) in coords.items():
-        db_session.add(Reading(tenant_id=tenant.id, meter_id=mid, valor=1, lat=lat, lon=lon, created_at=__import__("datetime").datetime(2020, 1, 1)))
-    db_session.commit()
-    resp = client.post(
-        f"{_base(tenant)}/admin/routes/auto-generate", json={"meters_por_ruta": 10}, headers=admin_headers
-    )
-    (route,) = resp.json()
+def test_auto_generate_infers_route_from_a_jornada(client, tenant, admin_headers, gestor, many_meters, db_session):
+    order = [many_meters[i] for i in (5, 2, 9, 0, 7, 3)]
+    _jornada(db_session, tenant, gestor, order, NOW - dt.timedelta(days=10))
+    routes = _auto(client, tenant, admin_headers, incluir_sin_historial=False).json()
+    assert len(routes) == 1
+    assert [p["codigo"] for p in routes[0]["paradas"]] == [m.codigo for m in order]
+    assert routes[0]["recorridos_base"] == 1
+
+
+def test_gap_splits_jornadas_and_short_ones_are_ignored(client, tenant, admin_headers, gestor, many_meters, db_session):
+    start = NOW - dt.timedelta(days=10)
+    morning = many_meters[:5]
+    # 6h later (> default 4h gap): a different jornada, too short to count.
+    afternoon = many_meters[5:7]
+    _jornada(db_session, tenant, gestor, morning, start)
+    _jornada(db_session, tenant, gestor, afternoon, start + dt.timedelta(hours=6))
+    routes = _auto(client, tenant, admin_headers, incluir_sin_historial=False).json()
+    assert len(routes) == 1
+    assert {p["codigo"] for p in routes[0]["paradas"]} == {m.codigo for m in morning}
+
+
+def test_small_pause_does_not_split_a_jornada(client, tenant, admin_headers, gestor, many_meters, db_session):
+    start = NOW - dt.timedelta(days=10)
+    # 3 + 3 meters with a 2h lunch in between: one jornada of 6.
+    _jornada(db_session, tenant, gestor, many_meters[:3], start)
+    _jornada(db_session, tenant, gestor, many_meters[3:6], start + dt.timedelta(hours=2, minutes=30))
+    routes = _auto(client, tenant, admin_headers, incluir_sin_historial=False).json()
+    assert len(routes) == 1 and routes[0]["cantidad_medidores"] == 6
+
+
+def test_gap_horas_is_configurable(client, tenant, admin_headers, gestor, many_meters, db_session):
+    start = NOW - dt.timedelta(days=10)
+    _jornada(db_session, tenant, gestor, many_meters[:5], start)
+    _jornada(db_session, tenant, gestor, many_meters[5:10], start + dt.timedelta(hours=6))
+    two = _auto(client, tenant, admin_headers, incluir_sin_historial=False).json()
+    assert len(two) == 2
+    one = _auto(client, tenant, admin_headers, incluir_sin_historial=False, gap_horas=12, preview=True).json()
+    assert len(one) == 1 and one[0]["cantidad_medidores"] == 10
+
+
+def test_repeated_jornadas_merge_into_one_consensus_route(client, tenant, admin_headers, gestor, many_meters, db_session):
+    m = many_meters
+    # Same route three months in a row; the last one skips m[2] and swaps two stops.
+    _jornada(db_session, tenant, gestor, [m[0], m[1], m[2], m[3], m[4], m[5]], NOW - dt.timedelta(days=65))
+    _jornada(db_session, tenant, gestor, [m[0], m[1], m[2], m[3], m[4], m[5]], NOW - dt.timedelta(days=35))
+    _jornada(db_session, tenant, gestor, [m[0], m[1], m[3], m[5], m[4], m[6]], NOW - dt.timedelta(days=5))
+    routes = _auto(client, tenant, admin_headers, incluir_sin_historial=False).json()
+    assert len(routes) == 1
+    route = routes[0]
+    assert route["recorridos_base"] == 3
     codes = [p["codigo"] for p in route["paradas"]]
-    # The two neighbours must be consecutive stops, not split by the far one.
-    assert abs(codes.index("M-1") - codes.index("M-3")) == 1
+    assert codes[:2] == ["N-00", "N-01"]
+    assert set(codes) == {f"N-0{i}" for i in range(7)}  # m[2] kept (2 of 3), m[6] kept (latest)
+    assert codes.index("N-03") < codes.index("N-05")
 
 
-def test_auto_generate_solo_pendientes_skips_meters_read_this_month(client, tenant, admin_headers, gestor_headers, meters, db_session):
+def test_different_routes_stay_separate_and_leftovers_get_their_own(client, tenant, admin_headers, gestor, many_meters, db_session):
+    start = NOW - dt.timedelta(days=10)
+    _jornada(db_session, tenant, gestor, many_meters[:5], start)
+    _jornada(db_session, tenant, gestor, many_meters[5:10], start + dt.timedelta(days=1))
+    routes = _auto(client, tenant, admin_headers).json()
+    assert len(routes) == 3
+    assert [r["recorridos_base"] for r in routes] == [1, 1, None]
+    assert {p["codigo"] for p in routes[2]["paradas"]} == {"N-10", "N-11"}
+
+
+def test_old_history_and_admin_readings_are_ignored(client, tenant, admin_headers, gestor, many_meters, db_session):
+    _jornada(db_session, tenant, gestor, many_meters[:5], NOW - dt.timedelta(days=400))
+    resp = _auto(client, tenant, admin_headers, incluir_sin_historial=False)
+    assert resp.status_code == 400
+    # Manual admin readings (no gestor) say nothing about a walking order.
+    for i, m in enumerate(many_meters[:5]):
+        db_session.add(Reading(tenant_id=tenant.id, meter_id=m.id, valor=1, created_at=NOW - dt.timedelta(days=3, minutes=-i)))
+    db_session.commit()
+    assert _auto(client, tenant, admin_headers, incluir_sin_historial=False).status_code == 400
+
+
+def test_auto_generate_solo_pendientes_skips_meters_read_this_month(client, tenant, admin_headers, gestor_headers, meters):
     client.post(f"{_base(tenant)}/gestor/meters/{meters[0].id}/readings", data={"valor": "10"}, headers=gestor_headers)
-    resp = client.post(
-        f"{_base(tenant)}/admin/routes/auto-generate", json={"preview": True}, headers=admin_headers
-    )
+    resp = _auto(client, tenant, admin_headers, preview=True, solo_pendientes=True)
     assert {p["codigo"] for p in resp.json()[0]["paradas"]} == {"M-2", "M-3"}
 
 
 def test_auto_generate_with_nothing_to_do_is_400(client, tenant, admin_headers):
-    resp = client.post(f"{_base(tenant)}/admin/routes/auto-generate", json={}, headers=admin_headers)
-    assert resp.status_code == 400
+    assert _auto(client, tenant, admin_headers).status_code == 400
 
 
 def test_gestor_can_auto_generate_for_self(client, tenant, gestor_headers, gestor, meters):

@@ -369,6 +369,9 @@ class RouteOut(BaseModel):
     origen: str
     activo: bool
     cantidad_medidores: int
+    # Auto-generation only: how many past jornadas this route was inferred
+    # from (null for routes built from address order, and for stored routes).
+    recorridos_base: int | None = None
     paradas: list[RouteStopOut]
 
 
@@ -389,9 +392,18 @@ class RouteUpdate(BaseModel):
 
 class RouteAutoGenerate(BaseModel):
     tipo: Literal["luz", "agua", "gas"] | None = None
+    # A pause longer than this between two readings of the same gestor ends
+    # one jornada and starts the next.
+    gap_horas: float = Field(default=4, ge=1, le=12)
+    # Jornadas with fewer meters than this are ignored as noise.
+    min_medidores: int = Field(default=5, ge=1, le=500)
+    meses_historial: int = Field(default=3, ge=1, le=24)
+    # Also build routes (by address) for meters no past jornada covers.
+    incluir_sin_historial: bool = True
+    # Size of those address-based routes.
     meters_por_ruta: int = Field(default=30, ge=1, le=500)
-    # Only meters with no reading yet in the current calendar month.
-    solo_pendientes: bool = True
+    # Leave out meters already read in the current calendar month.
+    solo_pendientes: bool = False
     gestor_id: int | None = None
     nombre_base: str = Field(default="Ruta", min_length=1, max_length=100)
     # When true nothing is saved; the proposed routes are just returned.

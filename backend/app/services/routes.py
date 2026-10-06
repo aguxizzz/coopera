@@ -4,7 +4,7 @@ recorrido (RouteRun) that walks a gestor through them meter by meter.
 Shared by the admin and gestor routers so both build routes the same way."""
 
 import datetime as dt
-import math
+
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -98,26 +98,79 @@ def route_out(route: Route) -> RouteOut:
 
 # --- Automatic generation --------------------------------------------------
 
-
-def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
-    lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
-    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
-    return 6371 * 2 * math.asin(math.sqrt(h))
+# Two historical days count as "the same route" when at least this share of
+# the smaller one's meters appears in the other (overlap coefficient).
+SAME_ROUTE_OVERLAP = 0.6
 
 
-def _nearest_neighbour_order(points: dict[int, tuple[float, float]]) -> list[int]:
-    """Greedy walk: start at the westernmost meter and always hop to the
-    closest unvisited one. Not optimal, but it yields compact, walkable
-    stretches and chunking it gives geographically contiguous routes."""
-    remaining = dict(points)
-    current = min(remaining, key=lambda k: (remaining[k][1], remaining[k][0]))
-    order = [current]
-    pos = remaining.pop(current)
-    while remaining:
-        current = min(remaining, key=lambda k: _haversine_km(pos, remaining[k]))
-        order.append(current)
-        pos = remaining.pop(current)
-    return order
+def _split_sessions(readings: list[Reading], gap: dt.timedelta) -> list[list[Reading]]:
+    """Splits one gestor's readings (sorted by time) into jornadas: a pause
+    longer than `gap` closes the current one and the next reading opens a
+    new one. The first/last reading of each jornada are the route's
+    first/last meter."""
+    sessions: list[list[Reading]] = []
+    for r in readings:
+        if sessions and r.created_at - sessions[-1][-1].created_at <= gap:
+            sessions[-1].append(r)
+        else:
+            sessions.append([r])
+    return sessions
+
+
+def _session_meters(session: list[Reading]) -> list[int]:
+    """Meter ids in the order first read; a meter corrected twice in the day
+    counts once, at its first position."""
+    seen: list[int] = []
+    for r in session:
+        if r.meter_id not in seen:
+            seen.append(r.meter_id)
+    return seen
+
+
+def _same_route(a: list[int], b: list[int]) -> bool:
+    return len(set(a) & set(b)) / min(len(a), len(b)) >= SAME_ROUTE_OVERLAP
+
+
+def _consensus_order(sessions: list[list[int]]) -> list[int]:
+    """Merges several runs of the same route (oldest -> newest) into one
+    order. A meter is kept if it was in the latest run or in at least half
+    of them (so a meter skipped once isn't lost, and a meter retired long
+    ago doesn't linger). Position = average relative place within each run
+    that included it; ties go to the most recent run."""
+    latest = sessions[-1]
+    positions: dict[int, list[float]] = {}
+    for run in sessions:
+        for i, mid in enumerate(run):
+            positions.setdefault(mid, []).append(i / max(len(run) - 1, 1))
+    keep = [mid for mid, p in positions.items() if mid in latest or len(p) * 2 >= len(sessions)]
+    latest_idx = {mid: i for i, mid in enumerate(latest)}
+    return sorted(keep, key=lambda m: (sum(positions[m]) / len(positions[m]), latest_idx.get(m, len(latest))))
+
+
+def _route_preview(
+    db: Session, meters: dict[int, Meter], nombre: str, ids: list[int], gestor: Gestor | None, base: int | None
+) -> RouteOut:
+    return RouteOut(
+        id=None,
+        nombre=nombre,
+        gestor_id=gestor.id if gestor else None,
+        gestor_nombre=gestor.nombre if gestor else None,
+        origen="auto",
+        activo=True,
+        cantidad_medidores=len(ids),
+        recorridos_base=base,
+        paradas=[
+            RouteStopOut(
+                meter_id=mid,
+                orden=i,
+                codigo=meters[mid].codigo,
+                tipo=meters[mid].tipo,
+                direccion=meters[mid].direccion,
+                nombre_socio=meters[mid].member.nombre,
+            )
+            for i, mid in enumerate(ids, start=1)
+        ],
+    )
 
 
 def auto_generate(
@@ -125,86 +178,107 @@ def auto_generate(
     tenant_id: int,
     *,
     tipo: str | None,
+    gap_horas: float,
+    min_medidores: int,
+    meses_historial: int,
+    incluir_sin_historial: bool,
     meters_por_ruta: int,
     solo_pendientes: bool,
     gestor_id: int | None,
     nombre_base: str,
     preview: bool,
 ) -> list[RouteOut]:
-    """Splits the active meters into routes of at most `meters_por_ruta`.
+    """Infers routes from how the gestores actually worked, no location data
+    needed.
 
-    Meters are ordered by proximity using the coordinates of their latest
-    geolocated reading (gestores send lat/lon with each reading, so the map
-    improves itself over time). Meters never read with a location go last,
-    ordered by address."""
+    1. Each gestor's recent readings are cut into jornadas wherever there is
+       a pause longer than `gap_horas` (first reading after the pause = first
+       meter, last reading before the next pause = last meter).
+    2. Jornadas with fewer than `min_medidores` meters are dropped (a few
+       stray readings aren't a route).
+    3. Jornadas covering mostly the same meters (e.g. the same route in
+       different months) are merged into one with a consensus order.
+    4. Active meters no jornada covers are grouped by address into routes of
+       `meters_por_ruta` (if `incluir_sin_historial`)."""
     check_gestor(db, tenant_id, gestor_id)
+    gestor = db.get(Gestor, gestor_id) if gestor_id else None
 
     query = db.query(Meter).filter(Meter.tenant_id == tenant_id, Meter.activo.is_(True))
     if tipo:
         query = query.filter(Meter.tipo == tipo)
-    meters = query.all()
+    meters = {m.id: m for m in query.all()}
 
+    now = dt.datetime.utcnow()
+    month_start = dt.datetime(now.year, now.month, 1)
+    done_this_month: set[int] = set()
     if solo_pendientes:
-        now = dt.datetime.utcnow()
-        month_start = dt.datetime(now.year, now.month, 1)
-        done = {
+        done_this_month = {
             r[0]
             for r in db.query(Reading.meter_id)
             .filter(Reading.tenant_id == tenant_id, Reading.created_at >= month_start)
             .distinct()
             .all()
         }
-        meters = [m for m in meters if m.id not in done]
 
-    if not meters:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No hay medidores para armar rutas")
+    since = now - dt.timedelta(days=30 * meses_historial)
+    history = (
+        db.query(Reading)
+        .filter(Reading.tenant_id == tenant_id, Reading.gestor_id.isnot(None), Reading.created_at >= since)
+        .order_by(Reading.gestor_id, Reading.created_at)
+        .all()
+    )
+    by_gestor: dict[int, list[Reading]] = {}
+    for r in history:
+        by_gestor.setdefault(r.gestor_id, []).append(r)
 
-    points: dict[int, tuple[float, float]] = {}
-    for m in meters:
-        last = (
-            db.query(Reading)
-            .filter(Reading.meter_id == m.id, Reading.lat.isnot(None), Reading.lon.isnot(None))
-            .order_by(Reading.created_at.desc())
-            .first()
+    jornadas: list[tuple[dt.datetime, list[int]]] = []  # (start, meter ids)
+    for readings in by_gestor.values():
+        for session in _split_sessions(readings, dt.timedelta(hours=gap_horas)):
+            ids = [m for m in _session_meters(session) if m in meters]
+            if len(ids) >= min_medidores:
+                jornadas.append((session[0].created_at, ids))
+    jornadas.sort(key=lambda j: j[0])
+
+    # Cluster jornadas oldest -> newest; each joins the first cluster it matches.
+    clusters: list[list[list[int]]] = []
+    for _, ids in jornadas:
+        for c in clusters:
+            if _same_route(c[-1], ids):
+                c.append(ids)
+                break
+        else:
+            clusters.append([ids])
+
+    candidates: list[tuple[list[int], int | None]] = []
+    covered: set[int] = set()
+    # Most-repeated routes first: they're the most trustworthy ones.
+    for c in sorted(clusters, key=len, reverse=True):
+        ids = [m for m in _consensus_order(c) if m not in covered and m not in done_this_month]
+        if len(ids) >= min_medidores:
+            candidates.append((ids, len(c)))
+            covered.update(ids)
+    covered.update(m for c in clusters for ids in c for m in ids)
+
+    if incluir_sin_historial:
+        rest = sorted(
+            (m for m in meters.values() if m.id not in covered and m.id not in done_this_month),
+            key=lambda m: ((m.direccion or "").lower(), m.codigo),
         )
-        if last:
-            points[m.id] = (last.lat, last.lon)
+        ids = [m.id for m in rest]
+        candidates += [(ids[i : i + meters_por_ruta], None) for i in range(0, len(ids), meters_por_ruta)]
 
-    by_id = {m.id: m for m in meters}
-    ordered = _nearest_neighbour_order(points) if points else []
-    no_geo = sorted((m for m in meters if m.id not in points), key=lambda m: ((m.direccion or "").lower(), m.codigo))
-    ordered += [m.id for m in no_geo]
+    if not candidates:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No hay medidores ni historial suficiente para armar rutas")
 
-    chunks = [ordered[i : i + meters_por_ruta] for i in range(0, len(ordered), meters_por_ruta)]
-    gestor = db.get(Gestor, gestor_id) if gestor_id else None
     out = []
-    for n, chunk in enumerate(chunks, start=1):
+    for n, (ids, base) in enumerate(candidates, start=1):
         nombre = f"{nombre_base} {n}"
         if preview:
-            out.append(
-                RouteOut(
-                    id=None,
-                    nombre=nombre,
-                    gestor_id=gestor_id,
-                    gestor_nombre=gestor.nombre if gestor else None,
-                    origen="auto",
-                    activo=True,
-                    cantidad_medidores=len(chunk),
-                    paradas=[
-                        RouteStopOut(
-                            meter_id=mid,
-                            orden=i,
-                            codigo=by_id[mid].codigo,
-                            tipo=by_id[mid].tipo,
-                            direccion=by_id[mid].direccion,
-                            nombre_socio=by_id[mid].member.nombre,
-                        )
-                        for i, mid in enumerate(chunk, start=1)
-                    ],
-                )
-            )
+            out.append(_route_preview(db, meters, nombre, ids, gestor, base))
         else:
-            out.append(route_out(create_route(db, tenant_id, nombre, chunk, gestor_id, origen="auto")))
+            route_out_ = route_out(create_route(db, tenant_id, nombre, ids, gestor_id, origen="auto"))
+            route_out_.recorridos_base = base
+            out.append(route_out_)
     return out
 
 

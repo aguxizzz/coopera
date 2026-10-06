@@ -961,7 +961,7 @@ def auto_generate_routes(
     admin: AdminUser = Depends(get_current_admin),
 ):
     """Proposes (preview=true) or creates routes covering the active meters,
-    grouped by proximity. See app/services/routes.py."""
+    inferred from the gestores' past jornadas. See app/services/routes.py."""
     tenant = get_tenant(tenant_slug, db)
     created = route_service.auto_generate(db, tenant.id, **payload.model_dump())
     if not payload.preview:
