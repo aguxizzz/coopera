@@ -11,3 +11,4 @@ frontend/dist/
 frontend/.env
 .DS_Store
 .directory
+backend/uploads/
