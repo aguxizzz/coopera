@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.orm import Session, joinedload
 
 from app.auth import (
     consume_gestor_refresh_token,
@@ -36,7 +37,7 @@ from app.schemas import (
 from app.services.audit import log_action
 from app.services.qr_login import claim as claim_qr_session, get_qr_session, resolve_status
 from app.services import routes as route_service
-from app.services.readings import register_reading, update_reading
+from app.services.readings import latest_readings_by_meter, register_reading, update_reading
 from app.services.storage import UnsupportedPhotoType, upload_reading_photo
 
 import datetime as dt
@@ -220,21 +221,17 @@ def list_meters(
     assignment yet; every gestor sees the whole town, same as the paper
     books they're replacing."""
     tenant = get_tenant(tenant_slug, db)
-    meters = (
-        db.query(Meter)
-        .filter(Meter.tenant_id == tenant.id, Meter.activo.is_(True))
-        .order_by(Meter.codigo)
-        .all()
-    )
+    active = (Meter.tenant_id == tenant.id, Meter.activo.is_(True))
+    # Members come in the same query, and the latest readings in one more:
+    # this endpoint is hit by every gestor every time the route screen opens,
+    # so it must stay at a constant number of queries however many meters
+    # the cooperativa has.
+    meters = db.query(Meter).options(joinedload(Meter.member)).filter(*active).order_by(Meter.codigo).all()
+    last_by_meter = latest_readings_by_meter(db, select(Meter.id).where(*active))
 
     rows = []
     for meter in meters:
-        last = (
-            db.query(Reading)
-            .filter(Reading.meter_id == meter.id)
-            .order_by(Reading.created_at.desc())
-            .first()
-        )
+        last = last_by_meter.get(meter.id)
         rows.append(
             MeterOut(
                 id=meter.id,

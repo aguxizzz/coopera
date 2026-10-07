@@ -349,3 +349,111 @@ def test_routes_are_tenant_scoped(client, tenant, admin_headers, meters, db_sess
     db_session.commit()
     h = {"Authorization": f"Bearer {create_access_token(a.id, other.id)}"}
     assert client.get(f"/api/t/{other.slug}/admin/routes/{route['id']}", headers=h).status_code == 404
+
+
+# --- Query counts: no per-meter / per-stop queries ----------------------------
+
+
+def _count_queries(db_session, fn):
+    from sqlalchemy import event
+
+    statements = []
+
+    def on_execute(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", on_execute)
+    try:
+        result = fn()
+    finally:
+        event.remove(engine, "before_cursor_execute", on_execute)
+    return result, len(statements)
+
+
+def _add_meters(db_session, tenant, member, count, start=0):
+    out = []
+    for i in range(start, start + count):
+        m = Meter(tenant_id=tenant.id, member_id=member.id, codigo=f"Q-{i:03d}", tipo="luz", direccion=f"Calle {i}")
+        db_session.add(m)
+        out.append(m)
+    db_session.commit()
+    return out
+
+
+def test_gestor_meters_query_count_does_not_grow_with_meters(client, tenant, member, gestor_headers, db_session):
+    url = f"{_base(tenant)}/gestor/meters"
+    small = _add_meters(db_session, tenant, member, 3)
+    for i, m in enumerate(small):
+        db_session.add(Reading(tenant_id=tenant.id, meter_id=m.id, valor=100 + i))
+    db_session.commit()
+    _, few = _count_queries(db_session, lambda: client.get(url, headers=gestor_headers))
+
+    _add_meters(db_session, tenant, member, 40, start=100)
+    res, many = _count_queries(db_session, lambda: client.get(url, headers=gestor_headers))
+
+    assert res.status_code == 200 and len(res.json()) == 43
+    assert many == few
+
+
+def test_gestor_meters_reports_each_meters_latest_reading(client, tenant, member, gestor_headers, db_session):
+    a, b = _add_meters(db_session, tenant, member, 2)
+    now = dt.datetime.utcnow()
+    db_session.add_all(
+        [
+            Reading(tenant_id=tenant.id, meter_id=a.id, valor=10, created_at=now - dt.timedelta(days=40)),
+            Reading(tenant_id=tenant.id, meter_id=a.id, valor=25, created_at=now - dt.timedelta(days=2), anomala=True),
+            Reading(tenant_id=tenant.id, meter_id=b.id, valor=7, created_at=now - dt.timedelta(days=5)),
+        ]
+    )
+    db_session.commit()
+
+    rows = {r["codigo"]: r for r in client.get(f"{_base(tenant)}/gestor/meters", headers=gestor_headers).json()}
+    assert rows[a.codigo]["ultima_lectura"] == 25
+    assert rows[a.codigo]["ultima_lectura_anomala"] is True
+    assert rows[b.codigo]["ultima_lectura"] == 7
+
+
+def test_run_query_count_does_not_grow_with_stops(client, tenant, member, gestor_headers, db_session):
+    def start_run(meters):
+        route = client.post(
+            f"{_base(tenant)}/gestor/routes",
+            json={"nombre": f"R{len(meters)}", "meter_ids": [m.id for m in meters]},
+            headers=gestor_headers,
+        ).json()
+        return client.post(f"{_base(tenant)}/gestor/routes/{route['id']}/start", headers=gestor_headers).json()
+
+    small = start_run(_add_meters(db_session, tenant, member, 3))
+    _, few = _count_queries(
+        db_session, lambda: client.get(f"{_base(tenant)}/gestor/runs/{small['id']}", headers=gestor_headers)
+    )
+    client.post(f"{_base(tenant)}/gestor/runs/{small['id']}/cancel", headers=gestor_headers)
+
+    big = start_run(_add_meters(db_session, tenant, member, 30, start=100))
+    res, many = _count_queries(
+        db_session, lambda: client.get(f"{_base(tenant)}/gestor/runs/{big['id']}", headers=gestor_headers)
+    )
+
+    assert res.status_code == 200 and len(res.json()["paradas"]) == 30
+    assert many == few
+
+
+def test_run_stop_shows_value_before_its_own_reading(client, tenant, member, gestor_headers, db_session):
+    meter = _add_meters(db_session, tenant, member, 1)[0]
+    db_session.add(Reading(tenant_id=tenant.id, meter_id=meter.id, valor=100))
+    db_session.commit()
+    route = client.post(
+        f"{_base(tenant)}/gestor/routes", json={"nombre": "R", "meter_ids": [meter.id]}, headers=gestor_headers
+    ).json()
+    run = client.post(f"{_base(tenant)}/gestor/routes/{route['id']}/start", headers=gestor_headers).json()
+    stop = run["siguiente"]
+    assert stop["ultima_lectura"] == 100
+
+    client.post(
+        f"{_base(tenant)}/gestor/runs/{run['id']}/stops/{stop['id']}/reading",
+        data={"valor": "150"},
+        headers=gestor_headers,
+    )
+    after = client.get(f"{_base(tenant)}/gestor/runs/{run['id']}", headers=gestor_headers).json()
+    assert after["paradas"][0]["ultima_lectura"] == 100  # not the 150 it just produced
+    assert after["paradas"][0]["reading_id"] is not None
