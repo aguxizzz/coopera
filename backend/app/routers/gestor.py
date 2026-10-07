@@ -35,6 +35,7 @@ from app.schemas import (
     RunStopResult,
 )
 from app.services.audit import log_action
+from app.services.demo import is_demo, reset_demo
 from app.services.qr_login import claim as claim_qr_session, get_qr_session, resolve_status
 from app.services import routes as route_service
 from app.services.readings import latest_readings_by_meter, register_reading, update_reading
@@ -606,3 +607,20 @@ def cancel_run(
 ):
     tenant = get_tenant(tenant_slug, db)
     return _close_run(db, tenant, gestor, run_id, "cancelado", "route_run.cancelled")
+
+
+@router.post("/demo/reset", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("3/minute")
+def reset_demo_data(
+    request: Request,
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    gestor: Gestor = Depends(get_current_gestor),
+):
+    """Deja la cooperativa demo como al principio. Solo existe para valle-verde:
+    en cualquier otra cooperativa borraría datos reales."""
+    tenant = get_tenant(tenant_slug, db)
+    if not is_demo(tenant):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "El reinicio solo está disponible en la cooperativa demo")
+    reset_demo(db, tenant)
+    log_action(db, tenant, gestor, "demo.reset", actor_type="gestor")
