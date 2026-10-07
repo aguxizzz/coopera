@@ -422,8 +422,15 @@ class RunStopOut(BaseModel):
     unidad: str
     numero_socio: str
     nombre_socio: str
+    # Latest reading of the meter that isn't this stop's own: what the gestor
+    # compares against. `ultima_lectura_fecha`/`_id` let the app notice the
+    # meter was already read this month (e.g. from the Ruta tab).
     ultima_lectura: float | None
+    ultima_lectura_fecha: dt.datetime | None = None
+    ultima_lectura_id: int | None = None
     reading_id: int | None
+    # Value of the reading this very stop produced (null until it is read).
+    valor_leido: float | None = None
     completed_at: dt.datetime | None
 
 

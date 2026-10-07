@@ -6,10 +6,11 @@ Shared by the admin and gestor routers so both build routes the same way."""
 import datetime as dt
 
 from fastapi import HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models import Gestor, Meter, Reading, Route, RouteRun, RouteRunStop, RouteStop
 from app.schemas import RouteOut, RouteStopOut, RunOut, RunStopOut
+from app.services.readings import latest_readings_by_meter
 
 
 # --- Routes ----------------------------------------------------------------
@@ -339,14 +340,35 @@ def maybe_complete(db: Session, run: RouteRun) -> None:
         db.refresh(run)
 
 
-def _stop_out(db: Session, stop: RouteRunStop) -> RunStopOut:
-    m = stop.meter
+def _load_stops(db: Session, run: RouteRun) -> list[RouteRunStop]:
+    """The run's stops with each meter and its member loaded in a single
+    query, so building the response doesn't lazy-load them stop by stop."""
+    return (
+        db.query(RouteRunStop)
+        .options(joinedload(RouteRunStop.meter).joinedload(Meter.member))
+        .filter(RouteRunStop.run_id == run.id)
+        .order_by(RouteRunStop.orden)
+        .all()
+    )
+
+
+def _stops_out(db: Session, stops: list[RouteRunStop]) -> list[RunStopOut]:
     # Value as of when the gestor opens the stop: the latest reading that
-    # isn't the one this very stop produced.
-    q = db.query(Reading).filter(Reading.meter_id == m.id)
-    if stop.reading_id:
-        q = q.filter(Reading.id != stop.reading_id)
-    last = q.order_by(Reading.created_at.desc()).first()
+    # isn't the one this very stop produced. A reading belongs to exactly one
+    # meter (and a run has one stop per meter), so excluding every stop's own
+    # reading at once is equivalent to excluding it per stop.
+    last_by_meter = latest_readings_by_meter(
+        db,
+        [s.meter_id for s in stops],
+        exclude_reading_ids=[s.reading_id for s in stops if s.reading_id],
+    )
+    own_ids = [s.reading_id for s in stops if s.reading_id]
+    own = {r.id: r for r in db.query(Reading).filter(Reading.id.in_(own_ids)).all()} if own_ids else {}
+    return [_stop_out(s, last_by_meter.get(s.meter_id), own.get(s.reading_id)) for s in stops]
+
+
+def _stop_out(stop: RouteRunStop, last: Reading | None, own: Reading | None) -> RunStopOut:
+    m = stop.meter
     return RunStopOut(
         id=stop.id,
         orden=stop.orden,
@@ -360,13 +382,22 @@ def _stop_out(db: Session, stop: RouteRunStop) -> RunStopOut:
         numero_socio=m.member.numero_socio,
         nombre_socio=m.member.nombre,
         ultima_lectura=last.valor if last else None,
+        ultima_lectura_fecha=last.created_at if last else None,
+        ultima_lectura_id=last.id if last else None,
         reading_id=stop.reading_id,
+        valor_leido=own.valor if own else None,
         completed_at=stop.completed_at,
     )
 
 
 def run_out(db: Session, run: RouteRun, include_stops: bool = False) -> RunOut:
     nxt = next_stop(run)
+    if include_stops:
+        shown = _stops_out(db, _load_stops(db, run))
+        next_out = next((o for o in shown if nxt and o.id == nxt.id), None)
+    else:
+        shown = None
+        next_out = _stops_out(db, [nxt])[0] if nxt else None
     return RunOut(
         id=run.id,
         route_id=run.route_id,
@@ -380,6 +411,6 @@ def run_out(db: Session, run: RouteRun, include_stops: bool = False) -> RunOut:
         leidas=sum(s.status == "leido" for s in run.stops),
         salteadas=sum(s.status == "salteado" for s in run.stops),
         pendientes=sum(s.status == "pendiente" for s in run.stops),
-        siguiente=_stop_out(db, nxt) if nxt else None,
-        paradas=[_stop_out(db, s) for s in run.stops] if include_stops else None,
+        siguiente=next_out,
+        paradas=shown,
     )

@@ -3,7 +3,11 @@ registers a new meter reading. Kept deliberately simple: it only has to
 catch the two mistakes that actually happen in the field (misread digit,
 or skipped meter) so a human reviews before the reading feeds a bill."""
 
+from collections.abc import Iterable
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import Select
 
 from app.models import Meter, Reading
 
@@ -13,6 +17,36 @@ from app.models import Meter, Reading
 # routinely blows past 10x.
 ANOMALY_MULTIPLIER = 4
 HISTORY_SIZE = 6
+
+
+def latest_readings_by_meter(
+    db: Session,
+    meter_ids: Iterable[int] | Select,
+    exclude_reading_ids: Iterable[int] = (),
+) -> dict[int, Reading]:
+    """Most recent reading of each given meter, in ONE query (a window
+    function ranks every meter's readings newest-first and keeps rank 1),
+    instead of one query per meter. `meter_ids` may be a list or a
+    `select(Meter.id)...`. Readings in `exclude_reading_ids` are skipped, as
+    when a stop wants the value *before* the reading it produced itself."""
+    if not isinstance(meter_ids, Select):
+        meter_ids = list(meter_ids)
+        if not meter_ids:
+            return {}
+    excluded = list(exclude_reading_ids)
+
+    ranked = select(
+        Reading.id.label("id"),
+        func.row_number()
+        .over(partition_by=Reading.meter_id, order_by=(Reading.created_at.desc(), Reading.id.desc()))
+        .label("rn"),
+    ).where(Reading.meter_id.in_(meter_ids))
+    if excluded:
+        ranked = ranked.where(Reading.id.notin_(excluded))
+    ranked = ranked.subquery()
+
+    rows = db.query(Reading).join(ranked, Reading.id == ranked.c.id).filter(ranked.c.rn == 1).all()
+    return {r.meter_id: r for r in rows}
 
 
 def register_reading(

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.orm import Session, joinedload
 
 from app.auth import (
     consume_gestor_refresh_token,
@@ -36,7 +37,7 @@ from app.schemas import (
 from app.services.audit import log_action
 from app.services.qr_login import claim as claim_qr_session, get_qr_session, resolve_status
 from app.services import routes as route_service
-from app.services.readings import register_reading, update_reading
+from app.services.readings import latest_readings_by_meter, register_reading, update_reading
 from app.services.storage import UnsupportedPhotoType, upload_reading_photo
 
 import datetime as dt
@@ -220,21 +221,17 @@ def list_meters(
     assignment yet; every gestor sees the whole town, same as the paper
     books they're replacing."""
     tenant = get_tenant(tenant_slug, db)
-    meters = (
-        db.query(Meter)
-        .filter(Meter.tenant_id == tenant.id, Meter.activo.is_(True))
-        .order_by(Meter.codigo)
-        .all()
-    )
+    active = (Meter.tenant_id == tenant.id, Meter.activo.is_(True))
+    # Members come in the same query, and the latest readings in one more:
+    # this endpoint is hit by every gestor every time the route screen opens,
+    # so it must stay at a constant number of queries however many meters
+    # the cooperativa has.
+    meters = db.query(Meter).options(joinedload(Meter.member)).filter(*active).order_by(Meter.codigo).all()
+    last_by_meter = latest_readings_by_meter(db, select(Meter.id).where(*active))
 
     rows = []
     for meter in meters:
-        last = (
-            db.query(Reading)
-            .filter(Reading.meter_id == meter.id)
-            .order_by(Reading.created_at.desc())
-            .first()
-        )
+        last = last_by_meter.get(meter.id)
         rows.append(
             MeterOut(
                 id=meter.id,
@@ -318,6 +315,13 @@ def _get_reading(db: Session, meter_id: int, reading_id: int) -> Reading:
     return reading
 
 
+def _in_current_cycle(reading: Reading) -> bool:
+    """Whether the reading was loaded this calendar month (still open for
+    correction from the app)."""
+    now = dt.datetime.utcnow()
+    return reading.created_at.year == now.year and reading.created_at.month == now.month
+
+
 @router.patch("/meters/{meter_id}/readings/{reading_id}", response_model=ReadingOut)
 async def update_reading_endpoint(
     tenant_slug: str,
@@ -338,8 +342,7 @@ async def update_reading_endpoint(
     meter = _get_meter(db, tenant.id, meter_id)
     reading = _get_reading(db, meter.id, reading_id)
 
-    now = dt.datetime.utcnow()
-    if reading.created_at.year != now.year or reading.created_at.month != now.month:
+    if not _in_current_cycle(reading):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "Esta lectura ya no pertenece al ciclo actual y no se puede editar desde la app",
@@ -500,17 +503,24 @@ async def submit_stop_reading(
 
     if stop.reading_id is not None:
         reading = stop.reading
-        now = dt.datetime.utcnow()
-        if reading.created_at.year != now.year or reading.created_at.month != now.month:
+        if not _in_current_cycle(reading):
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 "Esta lectura ya no pertenece al ciclo actual y no se puede editar desde la app",
             )
         reading = update_reading(db, reading, valor, foto_urls=foto_urls or None)
     else:
-        reading = register_reading(
-            db, meter, valor, gestor_id=gestor.id, foto_urls=foto_urls or None, lat=lat, lon=lon
-        )
+        # Services are billed off one reading per month. If the meter was
+        # already read this month (e.g. from the Ruta tab, outside this
+        # recorrido), the stop corrects that reading and links to it instead
+        # of stacking a second one — the same rule as PATCH .../readings.
+        existing = latest_readings_by_meter(db, [meter.id]).get(meter.id)
+        if existing is not None and _in_current_cycle(existing):
+            reading = update_reading(db, existing, valor, foto_urls=foto_urls or None)
+        else:
+            reading = register_reading(
+                db, meter, valor, gestor_id=gestor.id, foto_urls=foto_urls or None, lat=lat, lon=lon
+            )
         stop.reading_id = reading.id
 
     stop.status = "leido"
