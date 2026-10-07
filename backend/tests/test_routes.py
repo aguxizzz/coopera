@@ -440,7 +440,9 @@ def test_run_query_count_does_not_grow_with_stops(client, tenant, member, gestor
 
 def test_run_stop_shows_value_before_its_own_reading(client, tenant, member, gestor_headers, db_session):
     meter = _add_meters(db_session, tenant, member, 1)[0]
-    db_session.add(Reading(tenant_id=tenant.id, meter_id=meter.id, valor=100))
+    db_session.add(
+        Reading(tenant_id=tenant.id, meter_id=meter.id, valor=100, created_at=dt.datetime.utcnow() - dt.timedelta(days=45))
+    )
     db_session.commit()
     route = client.post(
         f"{_base(tenant)}/gestor/routes", json={"nombre": "R", "meter_ids": [meter.id]}, headers=gestor_headers
@@ -457,3 +459,56 @@ def test_run_stop_shows_value_before_its_own_reading(client, tenant, member, ges
     after = client.get(f"{_base(tenant)}/gestor/runs/{run['id']}", headers=gestor_headers).json()
     assert after["paradas"][0]["ultima_lectura"] == 100  # not the 150 it just produced
     assert after["paradas"][0]["reading_id"] is not None
+
+
+# --- Recorrido and the monthly reading ---------------------------------------
+
+
+def test_run_stop_exposes_last_reading_date_and_own_value(client, tenant, member, gestor_headers, db_session):
+    meter = _add_meters(db_session, tenant, member, 1)[0]
+    prev = Reading(tenant_id=tenant.id, meter_id=meter.id, valor=100, created_at=dt.datetime.utcnow() - dt.timedelta(days=40))
+    db_session.add(prev)
+    db_session.commit()
+    g = f"{_base(tenant)}/gestor"
+    route = client.post(f"{g}/routes", json={"nombre": "R", "meter_ids": [meter.id]}, headers=gestor_headers).json()
+    run = client.post(f"{g}/routes/{route['id']}/start", headers=gestor_headers).json()
+    stop = run["siguiente"]
+    assert stop["ultima_lectura"] == 100
+    assert stop["ultima_lectura_id"] == prev.id
+    assert stop["ultima_lectura_fecha"] is not None
+    assert stop["valor_leido"] is None
+
+    client.post(f"{g}/runs/{run['id']}/stops/{stop['id']}/reading", data={"valor": "130"}, headers=gestor_headers)
+    after = client.get(f"{g}/runs/{run['id']}", headers=gestor_headers).json()["paradas"][0]
+    assert after["valor_leido"] == 130
+    assert after["ultima_lectura"] == 100
+
+
+def test_run_stop_corrects_a_reading_already_loaded_this_month(client, tenant, member, gestor_headers, db_session):
+    meter = _add_meters(db_session, tenant, member, 1)[0]
+    g = f"{_base(tenant)}/gestor"
+    first = client.post(f"{g}/meters/{meter.id}/readings", data={"valor": "100"}, headers=gestor_headers).json()
+    route = client.post(f"{g}/routes", json={"nombre": "R", "meter_ids": [meter.id]}, headers=gestor_headers).json()
+    run = client.post(f"{g}/routes/{route['id']}/start", headers=gestor_headers).json()
+    stop = run["siguiente"]
+    assert stop["ultima_lectura_id"] == first["id"]
+
+    res = client.post(f"{g}/runs/{run['id']}/stops/{stop['id']}/reading", data={"valor": "110"}, headers=gestor_headers)
+    assert res.status_code == 200
+    assert res.json()["reading"]["id"] == first["id"]  # same reading, corrected
+    readings = db_session.query(Reading).filter(Reading.meter_id == meter.id).all()
+    assert len(readings) == 1 and readings[0].valor == 110
+    assert res.json()["run"]["leidas"] == 1
+
+
+def test_run_stop_adds_a_new_reading_when_last_one_is_from_a_past_month(client, tenant, member, gestor_headers, db_session):
+    meter = _add_meters(db_session, tenant, member, 1)[0]
+    db_session.add(Reading(tenant_id=tenant.id, meter_id=meter.id, valor=100, created_at=dt.datetime.utcnow() - dt.timedelta(days=45)))
+    db_session.commit()
+    g = f"{_base(tenant)}/gestor"
+    route = client.post(f"{g}/routes", json={"nombre": "R", "meter_ids": [meter.id]}, headers=gestor_headers).json()
+    run = client.post(f"{g}/routes/{route['id']}/start", headers=gestor_headers).json()
+    stop = run["siguiente"]
+    res = client.post(f"{g}/runs/{run['id']}/stops/{stop['id']}/reading", data={"valor": "140"}, headers=gestor_headers)
+    assert res.status_code == 200
+    assert db_session.query(Reading).filter(Reading.meter_id == meter.id).count() == 2

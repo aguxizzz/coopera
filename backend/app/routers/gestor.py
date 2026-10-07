@@ -315,6 +315,13 @@ def _get_reading(db: Session, meter_id: int, reading_id: int) -> Reading:
     return reading
 
 
+def _in_current_cycle(reading: Reading) -> bool:
+    """Whether the reading was loaded this calendar month (still open for
+    correction from the app)."""
+    now = dt.datetime.utcnow()
+    return reading.created_at.year == now.year and reading.created_at.month == now.month
+
+
 @router.patch("/meters/{meter_id}/readings/{reading_id}", response_model=ReadingOut)
 async def update_reading_endpoint(
     tenant_slug: str,
@@ -335,8 +342,7 @@ async def update_reading_endpoint(
     meter = _get_meter(db, tenant.id, meter_id)
     reading = _get_reading(db, meter.id, reading_id)
 
-    now = dt.datetime.utcnow()
-    if reading.created_at.year != now.year or reading.created_at.month != now.month:
+    if not _in_current_cycle(reading):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "Esta lectura ya no pertenece al ciclo actual y no se puede editar desde la app",
@@ -497,17 +503,24 @@ async def submit_stop_reading(
 
     if stop.reading_id is not None:
         reading = stop.reading
-        now = dt.datetime.utcnow()
-        if reading.created_at.year != now.year or reading.created_at.month != now.month:
+        if not _in_current_cycle(reading):
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 "Esta lectura ya no pertenece al ciclo actual y no se puede editar desde la app",
             )
         reading = update_reading(db, reading, valor, foto_urls=foto_urls or None)
     else:
-        reading = register_reading(
-            db, meter, valor, gestor_id=gestor.id, foto_urls=foto_urls or None, lat=lat, lon=lon
-        )
+        # Services are billed off one reading per month. If the meter was
+        # already read this month (e.g. from the Ruta tab, outside this
+        # recorrido), the stop corrects that reading and links to it instead
+        # of stacking a second one — the same rule as PATCH .../readings.
+        existing = latest_readings_by_meter(db, [meter.id]).get(meter.id)
+        if existing is not None and _in_current_cycle(existing):
+            reading = update_reading(db, existing, valor, foto_urls=foto_urls or None)
+        else:
+            reading = register_reading(
+                db, meter, valor, gestor_id=gestor.id, foto_urls=foto_urls or None, lat=lat, lon=lon
+            )
         stop.reading_id = reading.id
 
     stop.status = "leido"

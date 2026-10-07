@@ -362,10 +362,12 @@ def _stops_out(db: Session, stops: list[RouteRunStop]) -> list[RunStopOut]:
         [s.meter_id for s in stops],
         exclude_reading_ids=[s.reading_id for s in stops if s.reading_id],
     )
-    return [_stop_out(s, last_by_meter.get(s.meter_id)) for s in stops]
+    own_ids = [s.reading_id for s in stops if s.reading_id]
+    own = {r.id: r for r in db.query(Reading).filter(Reading.id.in_(own_ids)).all()} if own_ids else {}
+    return [_stop_out(s, last_by_meter.get(s.meter_id), own.get(s.reading_id)) for s in stops]
 
 
-def _stop_out(stop: RouteRunStop, last: Reading | None) -> RunStopOut:
+def _stop_out(stop: RouteRunStop, last: Reading | None, own: Reading | None) -> RunStopOut:
     m = stop.meter
     return RunStopOut(
         id=stop.id,
@@ -380,7 +382,10 @@ def _stop_out(stop: RouteRunStop, last: Reading | None) -> RunStopOut:
         numero_socio=m.member.numero_socio,
         nombre_socio=m.member.nombre,
         ultima_lectura=last.valor if last else None,
+        ultima_lectura_fecha=last.created_at if last else None,
+        ultima_lectura_id=last.id if last else None,
         reading_id=stop.reading_id,
+        valor_leido=own.valor if own else None,
         completed_at=stop.completed_at,
     )
 
