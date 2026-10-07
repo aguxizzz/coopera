@@ -331,6 +331,7 @@ class ReadingOut(BaseModel):
     consumo: float | None
     foto_urls: list[str] | None
     anomala: bool
+    observacion: str | None = None
     created_at: dt.datetime
 
     model_config = ConfigDict(from_attributes=True)

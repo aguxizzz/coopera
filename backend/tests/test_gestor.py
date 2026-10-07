@@ -511,3 +511,49 @@ def test_qr_login_code_scoped_to_tenant(client, tenant, admin_headers, db_sessio
     code = _start_qr(client, tenant.slug, admin_headers).json()["code"]
     resp = client.post(f"/api/t/{other_tenant.slug}/gestor/qr-session/{code}/claim")
     assert resp.status_code == 404
+
+
+def test_reading_saved_with_observacion_is_kept_and_flagged_for_review(client, tenant, gestor_headers, meter):
+    # Within the server's normal range, but the gestor saw something worth
+    # telling the admin (the app asks for a reason on its own warnings).
+    for v in [100, 110, 120, 130]:
+        client.post(
+            f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings",
+            headers=gestor_headers, data={"valor": v},
+        )
+    resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings",
+        headers=gestor_headers,
+        data={"valor": 160, "observacion": "  Pérdida visible "},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["observacion"] == "Pérdida visible"
+    assert body["anomala"] is True
+
+    resp = client.get(f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings", headers=gestor_headers)
+    assert resp.json()[0]["observacion"] == "Pérdida visible"
+
+
+def test_reading_without_observacion_has_none(client, tenant, gestor_headers, meter):
+    resp = client.post(
+        f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings",
+        headers=gestor_headers, data={"valor": 100, "observacion": "   "},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["observacion"] is None
+    assert resp.json()["anomala"] is False
+
+
+def test_correction_keeps_the_observacion_already_given(client, tenant, gestor_headers, meter):
+    created = client.post(
+        f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings",
+        headers=gestor_headers, data={"valor": 100, "observacion": "Medidor cambiado"},
+    ).json()
+    resp = client.patch(
+        f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings/{created['id']}",
+        headers=gestor_headers, data={"valor": 105},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["observacion"] == "Medidor cambiado"
+    assert resp.json()["anomala"] is True

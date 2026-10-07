@@ -266,6 +266,7 @@ async def create_reading(
     valor: float = Form(...),
     lat: float | None = Form(None),
     lon: float | None = Form(None),
+    observacion: str | None = Form(None, max_length=255),
     foto: list[UploadFile] | None = File(None),
     db: Session = Depends(get_db),
     gestor: Gestor = Depends(get_current_gestor),
@@ -283,6 +284,7 @@ async def create_reading(
         foto_urls=foto_urls or None,
         lat=lat,
         lon=lon,
+        observacion=observacion,
     )
     return reading
 
@@ -328,6 +330,7 @@ async def update_reading_endpoint(
     meter_id: int,
     reading_id: int,
     valor: float = Form(...),
+    observacion: str | None = Form(None, max_length=255),
     foto: list[UploadFile] | None = File(None),
     db: Session = Depends(get_db),
     gestor: Gestor = Depends(get_current_gestor),
@@ -355,6 +358,7 @@ async def update_reading_endpoint(
         reading,
         valor,
         foto_urls=foto_urls or None,
+        observacion=observacion,
     )
     log_action(
         db, tenant, gestor, "gestor.reading_updated", target=f"reading:{reading.id}", actor_type="gestor"
@@ -485,6 +489,7 @@ async def submit_stop_reading(
     valor: float = Form(...),
     lat: float | None = Form(None),
     lon: float | None = Form(None),
+    observacion: str | None = Form(None, max_length=255),
     foto: list[UploadFile] | None = File(None),
     db: Session = Depends(get_db),
     gestor: Gestor = Depends(get_current_gestor),
@@ -508,7 +513,7 @@ async def submit_stop_reading(
                 status.HTTP_409_CONFLICT,
                 "Esta lectura ya no pertenece al ciclo actual y no se puede editar desde la app",
             )
-        reading = update_reading(db, reading, valor, foto_urls=foto_urls or None)
+        reading = update_reading(db, reading, valor, foto_urls=foto_urls or None, observacion=observacion)
     else:
         # Services are billed off one reading per month. If the meter was
         # already read this month (e.g. from the Ruta tab, outside this
@@ -516,10 +521,17 @@ async def submit_stop_reading(
         # of stacking a second one — the same rule as PATCH .../readings.
         existing = latest_readings_by_meter(db, [meter.id]).get(meter.id)
         if existing is not None and _in_current_cycle(existing):
-            reading = update_reading(db, existing, valor, foto_urls=foto_urls or None)
+            reading = update_reading(db, existing, valor, foto_urls=foto_urls or None, observacion=observacion)
         else:
             reading = register_reading(
-                db, meter, valor, gestor_id=gestor.id, foto_urls=foto_urls or None, lat=lat, lon=lon
+                db,
+                meter,
+                valor,
+                gestor_id=gestor.id,
+                foto_urls=foto_urls or None,
+                lat=lat,
+                lon=lon,
+                observacion=observacion,
             )
         stop.reading_id = reading.id
 
