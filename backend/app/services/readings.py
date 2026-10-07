@@ -57,6 +57,7 @@ def register_reading(
     foto_urls: list[str] | None = None,
     lat: float | None = None,
     lon: float | None = None,
+    observacion: str | None = None,
 ) -> Reading:
     history = (
         db.query(Reading)
@@ -68,7 +69,8 @@ def register_reading(
 
     valor_anterior = history[0].valor if history else None
     consumo = (valor - valor_anterior) if valor_anterior is not None else None
-    anomala = _is_anomalous(consumo, history)
+    observacion = _clean_observacion(observacion)
+    anomala = _is_anomalous(consumo, history) or observacion is not None
 
     reading = Reading(
         tenant_id=meter.tenant_id,
@@ -81,6 +83,7 @@ def register_reading(
         lat=lat,
         lon=lon,
         anomala=anomala,
+        observacion=observacion,
     )
     db.add(reading)
     db.commit()
@@ -93,6 +96,7 @@ def update_reading(
     reading: Reading,
     valor: float,
     foto_urls: list[str] | None = None,
+    observacion: str | None = None,
 ) -> Reading:
     """Corrects a reading the gestor already submitted this same cycle
     (e.g. a misread digit caught right after saving), recomputing consumo/
@@ -109,7 +113,12 @@ def update_reading(
 
     valor_anterior = history[0].valor if history else None
     consumo = (valor - valor_anterior) if valor_anterior is not None else None
-    anomala = _is_anomalous(consumo, history)
+    # A correction without a new observación keeps the one already there:
+    # the gestor's reason still explains the reading.
+    observacion = _clean_observacion(observacion)
+    if observacion is not None:
+        reading.observacion = observacion
+    anomala = _is_anomalous(consumo, history) or reading.observacion is not None
 
     reading.valor = valor
     reading.valor_anterior = valor_anterior
@@ -122,6 +131,11 @@ def update_reading(
     db.commit()
     db.refresh(reading)
     return reading
+
+
+def _clean_observacion(observacion: str | None) -> str | None:
+    observacion = (observacion or "").strip()
+    return observacion[:255] or None
 
 
 def _is_anomalous(consumo: float | None, history: list[Reading]) -> bool:

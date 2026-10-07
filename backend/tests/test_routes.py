@@ -512,3 +512,18 @@ def test_run_stop_adds_a_new_reading_when_last_one_is_from_a_past_month(client, 
     res = client.post(f"{g}/runs/{run['id']}/stops/{stop['id']}/reading", data={"valor": "140"}, headers=gestor_headers)
     assert res.status_code == 200
     assert db_session.query(Reading).filter(Reading.meter_id == meter.id).count() == 2
+
+
+def test_stop_reading_carries_the_gestor_observacion(client, tenant, admin_headers, gestor_headers, meters):
+    route = _make_route(client, tenant, admin_headers, meters[:1]).json()
+    g = f"{_base(tenant)}/gestor"
+    run = client.post(f"{g}/routes/{route['id']}/start", headers=gestor_headers).json()
+    stop = run["paradas"][0]
+    resp = client.post(
+        f"{g}/runs/{run['id']}/stops/{stop['id']}/reading",
+        data={"valor": "100", "observacion": "Uso estacional"},
+        headers=gestor_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["reading"]["observacion"] == "Uso estacional"
+    assert resp.json()["reading"]["anomala"] is True

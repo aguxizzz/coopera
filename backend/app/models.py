@@ -361,6 +361,12 @@ class Reading(Base):
     # admin la revise antes de facturar.
     anomala: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Motivo que el gestor indica cuando guarda igual una lectura que la app
+    # le marcó como inusual ("Pérdida visible", "Medidor cambiado"...). Una
+    # lectura con observación también queda `anomala`, para que el admin la
+    # revise con ese contexto antes de facturar.
+    observacion: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, index=True)
 
     meter: Mapped[Meter] = relationship(back_populates="readings")
