@@ -6,6 +6,7 @@ export type AdminSection = "principal" | "socios" | "cortes" | "gestores" | "con
 type AdminNavItem = {
   key: AdminSection;
   label: string;
+  shortLabel?: string;
   Icon: LucideIcon;
 };
 
@@ -14,7 +15,7 @@ const ITEMS: AdminNavItem[] = [
   { key: "socios", label: "Socios", Icon: Users },
   { key: "cortes", label: "Cortes", Icon: PowerOff },
   { key: "gestores", label: "Gestores", Icon: QrCode },
-  { key: "config", label: "Configuración", Icon: Settings },
+  { key: "config", label: "Configuración", shortLabel: "Ajustes", Icon: Settings },
 ];
 
 type AdminNavProps = {
@@ -27,16 +28,17 @@ export default function AdminNav({ active, onChange, variant }: AdminNavProps) {
   if (variant === "tabs") {
     return (
       <nav className="admin-nav-tabs" aria-label="Secciones del panel">
-        {ITEMS.map(({ key, label, Icon }) => (
+        {ITEMS.map(({ key, label, shortLabel, Icon }) => (
           <button
             key={key}
             type="button"
+            aria-label={label}
             className={`admin-nav-tab${active === key ? " is-active" : ""}`}
             onClick={() => onChange(key)}
             aria-current={active === key}
           >
             <Icon size={20} strokeWidth={2} aria-hidden="true" />
-            <span>{label}</span>
+            <span>{shortLabel ?? label}</span>
           </button>
         ))}
       </nav>
