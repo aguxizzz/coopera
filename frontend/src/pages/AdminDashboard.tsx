@@ -58,6 +58,7 @@ import LogoPlaceholder from "../components/LogoPlaceholder";
 import AdminNav, { type AdminSection } from "../components/AdminNav";
 import CutsSection, { ESTADO_LABEL } from "../components/CutsSection";
 import OrderCutDrawer from "../components/OrderCutDrawer";
+import GestorQrCard from "../components/GestorQrCard";
 
 const MESES = [
   "", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
@@ -282,6 +283,7 @@ export default function AdminDashboard() {
 
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [qrExpiresAt, setQrExpiresAt] = useState<string | null>(null);
   const [qrStatus, setQrStatus] = useState<GestorQrStatus | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
   const [qrError, setQrError] = useState<string | null>(null);
@@ -727,10 +729,11 @@ export default function AdminDashboard() {
     setQrLoading(true);
     setQrError(null);
     try {
-      const { code } = await startGestorQr(tenantSlug, token);
+      const { code, expires_at } = await startGestorQr(tenantSlug, token);
       const qrContent = `coopera-gestor://login?slug=${encodeURIComponent(tenantSlug)}&code=${encodeURIComponent(code)}`;
       const dataUrl = await QRCode.toDataURL(qrContent, { width: 280, margin: 1 });
       setQrCode(code);
+      setQrExpiresAt(expires_at);
       setQrDataUrl(dataUrl);
       setQrStatus("pending");
     } catch (err) {
@@ -738,6 +741,14 @@ export default function AdminDashboard() {
     } finally {
       setQrLoading(false);
     }
+  }
+
+  function handleCancelQr() {
+    setQrCode(null);
+    setQrDataUrl(null);
+    setQrStatus(null);
+    setQrExpiresAt(null);
+    setQrError(null);
   }
 
   async function handleApproveQr() {
@@ -1828,60 +1839,17 @@ export default function AdminDashboard() {
       )}
 
       {section === "gestores" && (
-      <div className="card">
-        <div className="card-head">
-          <h2>Ingreso por QR</h2>
-        </div>
-        <p className="muted small">
-          En vez de tipear la contraseña compartida de gestores, un gestor puede escanear este
-          código desde la app y vos confirmás el ingreso acá. El código expira solo a los pocos
-          minutos y sirve una única vez.
-        </p>
-
-        {!qrCode && (
-          <button type="button" disabled={qrLoading} onClick={handleGenerateQr}>
-            {qrLoading ? "Generando..." : "Generar código QR"}
-          </button>
-        )}
-
-        {qrCode && qrDataUrl && (
-          <div className="gestor-qr">
-            {(qrStatus === "pending" || qrStatus === "claimed") && (
-              <img src={qrDataUrl} alt="Código QR para ingreso de gestores" width={220} height={220} />
-            )}
-
-            {qrStatus === "pending" && (
-              <p className="muted small">Esperando que un gestor escanee el código...</p>
-            )}
-
-            {qrStatus === "claimed" && (
-              <div className="gestor-qr-confirm">
-                <p>Un dispositivo escaneó el código. ¿Confirmás que es el gestor?</p>
-                <div className="gestor-qr-confirm-actions">
-                  <button type="button" disabled={qrLoading} onClick={handleApproveQr}>
-                    Confirmar
-                  </button>
-                  <button type="button" className="btn-danger" disabled={qrLoading} onClick={handleDenyQr}>
-                    Rechazar
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {qrStatus === "approved" && <p className="success">Ingreso confirmado. El gestor ya puede elegir su perfil en la app.</p>}
-            {qrStatus === "denied" && <p className="error">Rechazaste este intento de ingreso.</p>}
-            {qrStatus === "expired" && <p className="muted small">El código expiró.</p>}
-
-            {(qrStatus === "approved" || qrStatus === "denied" || qrStatus === "expired") && (
-              <button type="button" disabled={qrLoading} onClick={handleGenerateQr}>
-                {qrLoading ? "Generando..." : "Generar otro código"}
-              </button>
-            )}
-          </div>
-        )}
-
-        {qrError && <p className="error">{qrError}</p>}
-      </div>
+        <GestorQrCard
+          qrDataUrl={qrDataUrl}
+          status={qrCode ? qrStatus : null}
+          expiresAt={qrExpiresAt}
+          loading={qrLoading}
+          error={qrError}
+          onGenerate={handleGenerateQr}
+          onApprove={handleApproveQr}
+          onDeny={handleDenyQr}
+          onCancel={handleCancelQr}
+        />
       )}
         </div>
         </main>
