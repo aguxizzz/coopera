@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Search, X } from "lucide-react";
+import { ArrowUpRight, LogOut, Search, X } from "lucide-react";
 import QRCode from "qrcode";
 import {
   ApiError,
@@ -924,16 +924,25 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        <AdminNav variant="sidebar" active={section} onChange={setSection} />
+        <AdminNav variant="sidebar" active={section} onChange={setSection} badges={{ socios: stats.socios }} />
 
         <div className="admin-sidebar-footer">
-          <Link className="admin-sidebar-footer-link" to={`/${tenantSlug}`}>
-            Ver portal de socios
+          <Link className="admin-sidebar-portal" to={`/${tenantSlug}`}>
+            <span>Ver portal de socios</span>
+            <ArrowUpRight size={14} strokeWidth={2} aria-hidden="true" />
           </Link>
-          {currentAdmin && <span className="muted admin-sidebar-email">{currentAdmin.email}</span>}
-          <button type="button" className="btn-ghost" onClick={handleLogout}>
-            Cerrar sesión
-          </button>
+          <div className="admin-sidebar-user">
+            <span className="admin-sidebar-avatar" aria-hidden="true">
+              {(currentAdmin?.email ?? "A").slice(0, 2).toUpperCase()}
+            </span>
+            <div className="admin-sidebar-user-text">
+              <span className="admin-sidebar-user-name">Administrador</span>
+              {currentAdmin && <span className="admin-sidebar-email">{currentAdmin.email}</span>}
+            </div>
+            <button type="button" className="admin-sidebar-logout" onClick={handleLogout} aria-label="Cerrar sesión" title="Cerrar sesión">
+              <LogOut size={16} strokeWidth={1.8} aria-hidden="true" />
+            </button>
+          </div>
         </div>
       </aside>
 

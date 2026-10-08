@@ -1,4 +1,4 @@
-import { UploadCloud, Users, QrCode, Settings, PowerOff } from "lucide-react";
+import { Home, Users, QrCode, Settings, PowerOff } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 export type AdminSection = "principal" | "socios" | "cortes" | "gestores" | "config";
@@ -10,7 +10,7 @@ type AdminNavItem = {
 };
 
 const ITEMS: AdminNavItem[] = [
-  { key: "principal", label: "Principal", Icon: UploadCloud },
+  { key: "principal", label: "Principal", Icon: Home },
   { key: "socios", label: "Socios", Icon: Users },
   { key: "cortes", label: "Cortes", Icon: PowerOff },
   { key: "gestores", label: "Gestores", Icon: QrCode },
@@ -21,9 +21,10 @@ type AdminNavProps = {
   active: AdminSection;
   onChange: (section: AdminSection) => void;
   variant: "sidebar" | "tabs";
+  badges?: Partial<Record<AdminSection, number>>;
 };
 
-export default function AdminNav({ active, onChange, variant }: AdminNavProps) {
+export default function AdminNav({ active, onChange, variant, badges }: AdminNavProps) {
   if (variant === "tabs") {
     return (
       <nav className="admin-nav-tabs" aria-label="Secciones del panel">
@@ -35,7 +36,7 @@ export default function AdminNav({ active, onChange, variant }: AdminNavProps) {
             onClick={() => onChange(key)}
             aria-current={active === key}
           >
-            <Icon size={20} strokeWidth={2} aria-hidden="true" />
+            <Icon size={20} strokeWidth={1.8} aria-hidden="true" />
             <span>{label}</span>
           </button>
         ))}
@@ -53,8 +54,11 @@ export default function AdminNav({ active, onChange, variant }: AdminNavProps) {
           onClick={() => onChange(key)}
           aria-current={active === key}
         >
-          <Icon size={18} strokeWidth={1.8} aria-hidden="true" />
-          <span>{label}</span>
+          <span className="admin-nav-icon" aria-hidden="true">
+            <Icon size={16} strokeWidth={1.8} />
+          </span>
+          <span className="admin-nav-label">{label}</span>
+          {badges?.[key] != null && <span className="admin-nav-badge">{badges[key]}</span>}
         </button>
       ))}
     </nav>
