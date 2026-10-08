@@ -173,6 +173,8 @@ class MemberRow(BaseModel):
     nombre: str
     identificador: str
     saldo_total: float
+    # Estado más avanzado entre los cortes vigentes de sus medidores.
+    corte_estado: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -307,6 +309,10 @@ class MeterOut(BaseModel):
     ultima_lectura_fecha: dt.datetime | None
     ultima_lectura_anomala: bool = False
     ultima_lectura_id: int | None = None
+    # Estado del corte vigente del medidor (ordenado | ejecutado |
+    # reposicion_ordenada), o null si no tiene ninguno.
+    corte_estado: str | None = None
+    corte_id: int | None = None
 
 
 class MeterCreate(BaseModel):
@@ -459,3 +465,41 @@ class RunSkip(BaseModel):
 class RunStopResult(BaseModel):
     run: RunOut
     reading: ReadingOut | None = None
+
+
+# --- Cortes de servicio -----------------------------------------------------
+
+
+class ServiceCutCreate(BaseModel):
+    # null = todos los medidores activos del socio que no tengan un corte vigente.
+    meter_ids: list[int] | None = Field(default=None, min_length=1)
+    motivo: Literal["impago", "multa", "otro"]
+    detalle: str | None = Field(default=None, max_length=500)
+
+
+class ServiceCutOut(BaseModel):
+    id: int
+    meter_id: int
+    codigo: str
+    tipo: str
+    direccion: str | None
+    member_id: int
+    numero_socio: str
+    nombre_socio: str
+    motivo: str
+    detalle: str | None
+    estado: str
+    ordenado_por_email: str
+    created_at: dt.datetime
+    ejecutado_por_nombre: str | None
+    ejecutado_at: dt.datetime | None
+    ejecucion_nota: str | None
+    ejecucion_foto_urls: list[str] | None
+    reposicion_ordenada_por_email: str | None
+    reposicion_ordenada_at: dt.datetime | None
+    repuesto_por_nombre: str | None
+    repuesto_at: dt.datetime | None
+    reposicion_nota: str | None
+    reposicion_foto_urls: list[str] | None
+    cancelado_por_email: str | None
+    cancelado_at: dt.datetime | None

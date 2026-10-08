@@ -124,6 +124,7 @@ class Member(Base):
     tenant: Mapped[Tenant] = relationship(back_populates="members")
     invoices: Mapped[list["Invoice"]] = relationship(back_populates="member", cascade="all, delete-orphan")
     meters: Mapped[list["Meter"]] = relationship(back_populates="member", cascade="all, delete-orphan")
+    cuts: Mapped[list["ServiceCut"]] = relationship(back_populates="member", cascade="all, delete-orphan")
 
 
 class ImportBatch(Base):
@@ -449,3 +450,55 @@ class RouteRunStop(Base):
     run: Mapped[RouteRun] = relationship(back_populates="stops")
     meter: Mapped[Meter] = relationship()
     reading: Mapped[Reading | None] = relationship()
+
+
+class ServiceCut(Base):
+    """Orden de corte de servicio sobre un medidor (por impago, multa u otro
+    problema). La ordena la zona administrativa, la ejecuta físicamente un
+    gestor dejando evidencia, y se cierra con la reposición.
+
+    estado: ordenado -> ejecutado -> reposicion_ordenada -> repuesto, o
+    cancelado (antes de ejecutarse). Mientras esté en ordenado / ejecutado /
+    reposicion_ordenada el corte está "vigente": el medidor no se lee ni
+    entra en rutas nuevas (ver app/services/cuts.py). Los emails del admin se
+    guardan desnormalizados para que el historial sobreviva a que el admin se
+    elimine."""
+
+    __tablename__ = "service_cuts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    member_id: Mapped[int] = mapped_column(ForeignKey("members.id"), index=True)
+    meter_id: Mapped[int] = mapped_column(ForeignKey("meters.id"), index=True)
+
+    motivo: Mapped[str] = mapped_column(String(16))  # impago | multa | otro
+    detalle: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    estado: Mapped[str] = mapped_column(String(24), default="ordenado", index=True)
+
+    ordenado_por_email: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, index=True)
+
+    ejecutado_por_id: Mapped[int | None] = mapped_column(ForeignKey("gestores.id"), nullable=True)
+    ejecutado_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    ejecucion_nota: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ejecucion_foto_urls: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    ejecucion_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ejecucion_lon: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    reposicion_ordenada_por_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reposicion_ordenada_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
+    repuesto_por_id: Mapped[int | None] = mapped_column(ForeignKey("gestores.id"), nullable=True)
+    repuesto_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    reposicion_nota: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    reposicion_foto_urls: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    reposicion_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reposicion_lon: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    cancelado_por_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    cancelado_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
+    member: Mapped[Member] = relationship(back_populates="cuts")
+    meter: Mapped[Meter] = relationship()
+    ejecutado_por: Mapped[Gestor | None] = relationship(foreign_keys=[ejecutado_por_id])
+    repuesto_por: Mapped[Gestor | None] = relationship(foreign_keys=[repuesto_por_id])

@@ -16,6 +16,7 @@ from app.models import (
     RouteRun,
     RouteRunStop,
     RouteStop,
+    ServiceCut,
     Tenant,
 )
 from app.services.demo_seed import TENANTS, seed_tenant
@@ -37,6 +38,7 @@ def reset_demo(db: Session, tenant: Tenant) -> None:
     db.execute(delete(RouteRun).where(RouteRun.tenant_id == tid))
     db.execute(delete(RouteStop).where(RouteStop.route_id.in_(routes)))
     db.execute(delete(Route).where(Route.tenant_id == tid))
+    db.execute(delete(ServiceCut).where(ServiceCut.tenant_id == tid))
     db.execute(delete(Reading).where(Reading.tenant_id == tid))
     db.execute(delete(Meter).where(Meter.tenant_id == tid))
     db.execute(delete(Invoice).where(Invoice.tenant_id == tid))

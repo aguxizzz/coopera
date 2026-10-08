@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models import Gestor, Meter, Reading, Route, RouteRun, RouteRunStop, RouteStop
 from app.schemas import RouteOut, RouteStopOut, RunOut, RunStopOut
+from app.services.cuts import active_cuts_by_meter
 from app.services.readings import latest_readings_by_meter
 
 
@@ -207,7 +208,9 @@ def auto_generate(
     query = db.query(Meter).filter(Meter.tenant_id == tenant_id, Meter.activo.is_(True))
     if tipo:
         query = query.filter(Meter.tipo == tipo)
-    meters = {m.id: m for m in query.all()}
+    # A meter with a cut in force isn't read, so it doesn't belong in a route.
+    in_cut = active_cuts_by_meter(db, tenant_id)
+    meters = {m.id: m for m in query.all() if m.id not in in_cut}
 
     now = dt.datetime.utcnow()
     month_start = dt.datetime(now.year, now.month, 1)
@@ -314,7 +317,8 @@ def start_run(db: Session, route: Route, gestor: Gestor) -> RouteRun:
     if existing:
         return existing
 
-    stops = [s for s in route.stops if s.meter.activo]
+    in_cut = active_cuts_by_meter(db, route.tenant_id)
+    stops = [s for s in route.stops if s.meter.activo and s.meter_id not in in_cut]
     if not stops:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "La ruta no tiene medidores activos")
 

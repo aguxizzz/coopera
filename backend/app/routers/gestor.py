@@ -27,6 +27,7 @@ from app.schemas import (
     GestorTokenResponse,
     MeterOut,
     ReadingOut,
+    ServiceCutOut,
     RouteAutoGenerate,
     RouteCreate,
     RouteOut,
@@ -34,6 +35,7 @@ from app.schemas import (
     RunSkip,
     RunStopResult,
 )
+from app.services import cuts as cut_service
 from app.services.audit import log_action
 from app.services.demo import is_demo, reset_demo
 from app.services.qr_login import claim as claim_qr_session, get_qr_session, resolve_status
@@ -229,6 +231,7 @@ def list_meters(
     # the cooperativa has.
     meters = db.query(Meter).options(joinedload(Meter.member)).filter(*active).order_by(Meter.codigo).all()
     last_by_meter = latest_readings_by_meter(db, select(Meter.id).where(*active))
+    in_cut = cut_service.active_cuts_by_meter(db, tenant.id)
 
     rows = []
     for meter in meters:
@@ -248,6 +251,8 @@ def list_meters(
                 ultima_lectura_fecha=last.created_at if last else None,
                 ultima_lectura_anomala=last.anomala if last else False,
                 ultima_lectura_id=last.id if last else None,
+                corte_estado=in_cut[meter.id].estado if meter.id in in_cut else None,
+                corte_id=in_cut[meter.id].id if meter.id in in_cut else None,
             )
         )
     return rows
@@ -624,3 +629,63 @@ def reset_demo_data(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "El reinicio solo está disponible en la cooperativa demo")
     reset_demo(db, tenant)
     log_action(db, tenant, gestor, "demo.reset", actor_type="gestor")
+
+
+# --- Cortes de servicio ------------------------------------------------------
+# Los ordena la zona administrativa; el gestor los ejecuta físicamente (y
+# después repone el servicio) dejando nota y fotos de evidencia.
+
+
+@router.get("/cuts", response_model=list[ServiceCutOut])
+def list_cuts(
+    tenant_slug: str,
+    db: Session = Depends(get_db),
+    gestor: Gestor = Depends(get_current_gestor),
+):
+    """Cortes vigentes: por ejecutar (ordenado), ya cortados (ejecutado) y
+    reposiciones por hacer (reposicion_ordenada)."""
+    tenant = get_tenant(tenant_slug, db)
+    cuts = cut_service.list_cuts(db, tenant.id, cut_service.ACTIVE_STATES)
+    return [cut_service.cut_out(c) for c in cuts]
+
+
+@router.post("/cuts/{cut_id}/execute", response_model=ServiceCutOut)
+async def execute_cut(
+    tenant_slug: str,
+    cut_id: int,
+    nota: str | None = Form(None, max_length=500),
+    lat: float | None = Form(None),
+    lon: float | None = Form(None),
+    foto: list[UploadFile] | None = File(None),
+    db: Session = Depends(get_db),
+    gestor: Gestor = Depends(get_current_gestor),
+):
+    tenant = get_tenant(tenant_slug, db)
+    cut = cut_service.get_cut(db, tenant.id, cut_id)
+    if cut.estado != "ordenado":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Este corte no está pendiente de ejecución")
+    foto_urls = await _upload_reading_photos(tenant.slug, foto or [])
+    cut = cut_service.execute(db, cut, gestor.id, nota, foto_urls or None, lat, lon)
+    log_action(db, tenant, gestor, "cut.executed", target=f"cut:{cut.id}", actor_type="gestor")
+    return cut_service.cut_out(cut)
+
+
+@router.post("/cuts/{cut_id}/restore", response_model=ServiceCutOut)
+async def restore_cut(
+    tenant_slug: str,
+    cut_id: int,
+    nota: str | None = Form(None, max_length=500),
+    lat: float | None = Form(None),
+    lon: float | None = Form(None),
+    foto: list[UploadFile] | None = File(None),
+    db: Session = Depends(get_db),
+    gestor: Gestor = Depends(get_current_gestor),
+):
+    tenant = get_tenant(tenant_slug, db)
+    cut = cut_service.get_cut(db, tenant.id, cut_id)
+    if cut.estado != "reposicion_ordenada":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Esta reposición no está pendiente")
+    foto_urls = await _upload_reading_photos(tenant.slug, foto or [])
+    cut = cut_service.restore(db, cut, gestor.id, nota, foto_urls or None, lat, lon)
+    log_action(db, tenant, gestor, "cut.restored", target=f"cut:{cut.id}", actor_type="gestor")
+    return cut_service.cut_out(cut)

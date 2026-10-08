@@ -19,6 +19,7 @@ from app.models import (
     Reading,
     Route,
     RouteRun,
+    ServiceCut,
     Tenant,
 )
 from app.rate_limit import limiter
@@ -52,6 +53,8 @@ from app.schemas import (
     RouteUpdate,
     RunOut,
     MeterOut,
+    ServiceCutCreate,
+    ServiceCutOut,
     MpConnectUrlOut,
     MpStatusOut,
     PdfImportJobOut,
@@ -61,6 +64,7 @@ from app.schemas import (
     TokenResponse,
     UpdateInvoicePagado,
 )
+from app.services import cuts as cut_service
 from app.services.audit import log_action
 from app.services.importer import ImportError_, import_spreadsheet
 from app.services.helipagos import disconnect_tenant as disconnect_helipagos_tenant
@@ -183,6 +187,7 @@ def list_members(
     tenant = get_tenant(tenant_slug, db)
     members = db.query(Member).filter(Member.tenant_id == tenant.id).order_by(Member.numero_socio).all()
 
+    cut_state = cut_service.cut_state_by_member(db, tenant.id)
     rows = []
     for m in members:
         saldo = (
@@ -197,6 +202,7 @@ def list_members(
                 nombre=m.nombre,
                 identificador=m.identificador,
                 saldo_total=float(saldo or 0),
+                corte_estado=cut_state.get(m.id),
             )
         )
     return rows
@@ -838,6 +844,7 @@ def list_meters(
 ):
     tenant = get_tenant(tenant_slug, db)
     meters = db.query(Meter).filter(Meter.tenant_id == tenant.id).order_by(Meter.codigo).all()
+    in_cut = cut_service.active_cuts_by_meter(db, tenant.id)
 
     rows = []
     for meter in meters:
@@ -861,6 +868,8 @@ def list_meters(
                 ultima_lectura=last.valor if last else None,
                 ultima_lectura_fecha=last.created_at if last else None,
                 ultima_lectura_anomala=last.anomala if last else False,
+                corte_estado=in_cut[meter.id].estado if meter.id in in_cut else None,
+                corte_id=in_cut[meter.id].id if meter.id in in_cut else None,
             )
         )
     return rows
@@ -1050,3 +1059,65 @@ def get_route_run(
 ):
     tenant = get_tenant(tenant_slug, db)
     return route_service.run_out(db, route_service.get_run(db, tenant.id, run_id), include_stops=True)
+
+
+# --- Cortes de servicio ------------------------------------------------------
+# Los ordena cualquier admin (owner o staff); los ejecuta un gestor desde la
+# app (routers/gestor.py). Ver app/services/cuts.py.
+
+
+@router.get("/cuts", response_model=list[ServiceCutOut])
+def list_cuts(
+    tenant_slug: str,
+    estado: str | None = None,
+    member_id: int | None = None,
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    cuts = cut_service.list_cuts(db, tenant.id, (estado,) if estado else None)
+    return [cut_service.cut_out(c) for c in cuts if member_id is None or c.member_id == member_id]
+
+
+@router.post("/members/{member_id}/cuts", response_model=list[ServiceCutOut])
+def order_cuts(
+    tenant_slug: str,
+    member_id: int,
+    payload: ServiceCutCreate,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    member = db.query(Member).filter(Member.id == member_id, Member.tenant_id == tenant.id).first()
+    if member is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Socio no encontrado")
+    cuts = cut_service.order_cuts(db, member, payload.meter_ids, payload.motivo, payload.detalle, admin.email)
+    for c in cuts:
+        log_action(db, tenant, admin, "cut.ordered", target=f"cut:{c.id}", details=f"meter={c.meter_id} motivo={c.motivo}")
+    return [cut_service.cut_out(c) for c in cuts]
+
+
+@router.post("/cuts/{cut_id}/cancel", response_model=ServiceCutOut)
+def cancel_cut(
+    tenant_slug: str,
+    cut_id: int,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    cut = cut_service.cancel(db, cut_service.get_cut(db, tenant.id, cut_id), admin.email)
+    log_action(db, tenant, admin, "cut.cancelled", target=f"cut:{cut.id}", details=f"estado={cut.estado}")
+    return cut_service.cut_out(cut)
+
+
+@router.post("/cuts/{cut_id}/order-restore", response_model=ServiceCutOut)
+def order_cut_restore(
+    tenant_slug: str,
+    cut_id: int,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    tenant = get_tenant(tenant_slug, db)
+    cut = cut_service.order_restore(db, cut_service.get_cut(db, tenant.id, cut_id), admin.email)
+    log_action(db, tenant, admin, "cut.restore_ordered", target=f"cut:{cut.id}")
+    return cut_service.cut_out(cut)
