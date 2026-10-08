@@ -12,6 +12,8 @@ import Drawer from "./Drawer";
 
 export const TIPO_LABEL = { luz: "Luz", agua: "Agua", gas: "Gas" } as const;
 
+const TIPO_UNIT = { luz: "kWh", agua: "m³", gas: "m³" } as const;
+
 const MOTIVOS: { value: CutMotivo; label: string }[] = [
   { value: "impago", label: "Falta de pago" },
   { value: "multa", label: "Multa" },
@@ -121,35 +123,57 @@ export default function OrderCutDrawer({ open, onClose, tenantSlug, token, membe
               )}
             </div>
             <div className="cut-meter-list">
-              {meters.map((m) => (
-                <label key={m.id} className={`cut-meter${m.corte_estado ? " is-disabled" : ""}`}>
-                  <input
-                    type="checkbox"
-                    disabled={!!m.corte_estado}
-                    checked={selected.has(m.id)}
-                    onChange={() => toggle(m.id)}
-                  />
-                  <span className="cut-meter-info">
-                    <strong>
-                      {TIPO_LABEL[m.tipo]} · {m.codigo}
-                    </strong>
-                    <span className="muted small">{m.direccion ?? "Sin dirección"}</span>
-                  </span>
-                  {m.corte_estado && <span className="cut-pill is-ordenado">Ya tiene corte vigente</span>}
-                </label>
-              ))}
+              {meters.map((m) => {
+                const checked = selected.has(m.id);
+                return (
+                  <label
+                    key={m.id}
+                    className={`cut-meter tipo-${m.tipo}${checked ? " is-selected" : ""}${m.corte_estado ? " is-disabled" : ""}`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="sr-only"
+                      disabled={!!m.corte_estado}
+                      checked={checked}
+                      onChange={() => toggle(m.id)}
+                    />
+                    <span className="cut-check" aria-hidden="true">
+                      <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 8.5l3.2 3.2L13 4.8" />
+                      </svg>
+                    </span>
+                    <span className="cut-meter-info">
+                      <strong className="cut-meter-code">{m.codigo}</strong>
+                      <span className="cut-meter-address">{m.direccion ?? "Sin dirección"}</span>
+                      {m.corte_estado && <span className="cut-pill is-ordenado">Ya tiene corte vigente</span>}
+                    </span>
+                    <span className="cut-strip" aria-hidden="true">
+                      <span className="cut-strip-label">{TIPO_LABEL[m.tipo].toUpperCase()}</span>
+                      <span className="cut-strip-rule" />
+                      <span className="cut-strip-unit">{TIPO_UNIT[m.tipo]}</span>
+                    </span>
+                  </label>
+                );
+              })}
             </div>
 
-            <label className="cut-field" htmlFor="cut-motivo">
+            <div className="cut-field" role="radiogroup" aria-label="Motivo">
               <span className="cut-field-label">Motivo</span>
-              <select id="cut-motivo" value={motivo} onChange={(e) => setMotivo(e.target.value as CutMotivo)}>
+              <div className="cut-motivos">
                 {MOTIVOS.map((o) => (
-                  <option key={o.value} value={o.value}>
+                  <label key={o.value} className={`cut-motivo${motivo === o.value ? " is-selected" : ""}`}>
+                    <input
+                      type="radio"
+                      className="sr-only"
+                      name="cut-motivo"
+                      checked={motivo === o.value}
+                      onChange={() => setMotivo(o.value)}
+                    />
                     {o.label}
-                  </option>
+                  </label>
                 ))}
-              </select>
-            </label>
+              </div>
+            </div>
 
             <label className="cut-field" htmlFor="cut-detalle">
               <span className="cut-field-label">Detalle (opcional)</span>
