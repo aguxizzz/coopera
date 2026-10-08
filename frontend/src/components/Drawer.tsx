@@ -44,7 +44,7 @@ export default function Drawer({ open, onClose, title, children }: DrawerProps) 
         onClick={(e) => e.stopPropagation()}
       >
         <div className="drawer-head">
-          {title && <h2>{title}</h2>}
+          {typeof title === "string" ? <h2>{title}</h2> : title}
           <button type="button" className="drawer-close" onClick={onClose} aria-label="Cerrar">
             ✕
           </button>

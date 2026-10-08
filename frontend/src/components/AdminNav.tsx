@@ -1,7 +1,7 @@
-import { UploadCloud, Users, Settings } from "lucide-react";
+import { UploadCloud, Users, QrCode, Settings, PowerOff } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
-export type AdminSection = "principal" | "socios" | "config";
+export type AdminSection = "principal" | "socios" | "cortes" | "gestores" | "config";
 
 type AdminNavItem = {
   key: AdminSection;
@@ -12,55 +12,51 @@ type AdminNavItem = {
 const ITEMS: AdminNavItem[] = [
   { key: "principal", label: "Principal", Icon: UploadCloud },
   { key: "socios", label: "Socios", Icon: Users },
+  { key: "cortes", label: "Cortes", Icon: PowerOff },
+  { key: "gestores", label: "Gestores", Icon: QrCode },
   { key: "config", label: "Configuración", Icon: Settings },
 ];
 
 type AdminNavProps = {
-  variant: "sidebar" | "tabs";
   active: AdminSection;
   onChange: (section: AdminSection) => void;
+  variant: "sidebar" | "tabs";
 };
 
-export default function AdminNav({ variant, active, onChange }: AdminNavProps) {
-  return (
-    <>
-      {variant === "sidebar" && (
-      <nav className="admin-nav-sidebar" aria-label="Secciones del panel">
+export default function AdminNav({ active, onChange, variant }: AdminNavProps) {
+  if (variant === "tabs") {
+    return (
+      <nav className="admin-nav-tabs" aria-label="Secciones del panel">
         {ITEMS.map(({ key, label, Icon }) => (
           <button
             key={key}
             type="button"
-            className={`admin-nav-item${active === key ? " is-active" : ""}`}
+            className={`admin-nav-tab${active === key ? " is-active" : ""}`}
             onClick={() => onChange(key)}
             aria-current={active === key}
           >
-            <span className="admin-nav-icon">
-              <Icon size={20} strokeWidth={1.8} aria-hidden="true" />
-            </span>
-            <span className="admin-nav-label">{label}</span>
+            <Icon size={20} strokeWidth={2} aria-hidden="true" />
+            <span>{label}</span>
           </button>
         ))}
       </nav>
-      )}
+    );
+  }
 
-      {variant === "tabs" && (
-      <nav className="admin-nav-pill" aria-label="Secciones del panel">
-        {ITEMS.map(({ key, label, Icon }) => (
-          <button
-            key={key}
-            type="button"
-            className={`admin-nav-pill-item${active === key ? " is-active" : ""}`}
-            onClick={() => onChange(key)}
-            aria-current={active === key}
-          >
-            <span className="admin-nav-icon">
-              <Icon size={20} strokeWidth={1.8} aria-hidden="true" />
-            </span>
-            <span className="admin-nav-pill-label">{label}</span>
-          </button>
-        ))}
-      </nav>
-      )}
-    </>
+  return (
+    <nav className="admin-nav-list" aria-label="Secciones del panel">
+      {ITEMS.map(({ key, label, Icon }) => (
+        <button
+          key={key}
+          type="button"
+          className={`admin-nav-link${active === key ? " is-active" : ""}`}
+          onClick={() => onChange(key)}
+          aria-current={active === key}
+        >
+          <Icon size={18} strokeWidth={1.8} aria-hidden="true" />
+          <span>{label}</span>
+        </button>
+      ))}
+    </nav>
   );
 }

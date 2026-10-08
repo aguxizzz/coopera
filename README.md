@@ -108,6 +108,9 @@ tipo en SQLite de forma perfecta.
 
 Admin demo: `admin@valleverde.coop` / `coopera123` (tenant `valle-verde`).
 Socio demo: número de socio `201`, DNI `29888777` (valle-verde).
+Gestor demo (app mobile): `gestor@valleverde.coop` / `gestor123` (tenant `valle-verde`),
+con medidores de ejemplo `LUZ-201-01` y `LUZ-202-01` ya cargados.
+Dev login (panel CRM): `dev@coopera.app` / `coopera-dev123`.
 
 ### Frontend
 

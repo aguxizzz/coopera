@@ -1,45 +1,63 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Search, X, Crown, UserCog, UserPlus, Trash2 } from "lucide-react";
+import { Search, X } from "lucide-react";
+import QRCode from "qrcode";
 import {
   ApiError,
+  approveGestorQr,
   connectHelipagos,
+  connectMacroclick,
   createAdmin,
   deleteAdmin,
   deleteLogo,
   deleteMember,
   deleteMembers,
+  denyGestorQr,
   disconnectHelipagos,
+  disconnectMacroclick,
   disconnectMp,
   getAdminSettings,
   getAuditLog,
   getCurrentAdmin,
+  getGestorQrStatus,
   getHelipagosStatus,
+  getMacroclickStatus,
   getMpConnectUrl,
   getMpStatus,
+  getPdfImportStatus,
+  importPdf,
   importSpreadsheet,
   listAdmins,
   listMemberInvoices,
   listMembers,
+  markOldestInvoicePaid,
   setInvoicePagado,
+  startGestorQr,
   updateAdminRole,
   updateAdminSettings,
   uploadLogo,
   type AdminRole,
   type AdminUserOut,
   type AuditLogEntry,
+  type GestorQrStatus,
   type HelipagosStatus,
   type ImportResult,
   type InvoiceOut,
+  type MacroclickStatus,
   type MemberRow,
   type MpStatus,
+  type PdfImportJob,
   type TenantSettings,
 } from "../lib/api";
 import Drawer from "../components/Drawer";
 import ConfirmDialog from "../components/ConfirmDialog";
+import Toast from "../components/Toast";
 import FilePicker from "../components/FilePicker";
+import DropZone from "../components/DropZone";
 import LogoPlaceholder from "../components/LogoPlaceholder";
 import AdminNav, { type AdminSection } from "../components/AdminNav";
+import CutsSection, { ESTADO_LABEL } from "../components/CutsSection";
+import OrderCutDrawer from "../components/OrderCutDrawer";
 
 const MESES = [
   "", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
@@ -50,8 +68,181 @@ function money(value: number) {
   return value.toLocaleString("es-AR", { style: "currency", currency: "ARS" });
 }
 
+function parseAuditDetails(details: string | null): Record<string, string> {
+  if (!details) return {};
+  const parts = details.includes("|") ? details.split("|") : details.split(",");
+  const result: Record<string, string> = {};
+  for (const part of parts) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    const key = part.slice(0, eq).trim();
+    const value = part.slice(eq + 1).trim();
+    if (key) result[key] = value;
+  }
+  return result;
+}
+
+function auditBool(value: string | undefined, whenTrue: string, whenFalse: string) {
+  if (value === "True" || value === "true") return whenTrue;
+  if (value === "False" || value === "false") return whenFalse;
+  return value ?? "";
+}
+
+function auditTargetId(target: string | null) {
+  if (!target) return "";
+  const idx = target.indexOf(":");
+  return idx === -1 ? target : `#${target.slice(idx + 1)}`;
+}
+
+function formatAuditAction(entry: AuditLogEntry): string {
+  const d = parseAuditDetails(entry.details);
+  switch (entry.action) {
+    case "invoice.pagado_updated": {
+      const quien = d.socio ? ` de ${d.socio}` : "";
+      const periodo = d.periodo ? ` (período ${d.periodo})` : "";
+      return `marcó la factura ${auditTargetId(entry.target)}${quien}${periodo} como ${auditBool(d.pagado, "pagada", "no pagada")}`;
+    }
+    case "member.deleted":
+      return `eliminó al socio ${auditTargetId(entry.target)}`;
+    case "member.bulk_deleted":
+      return `eliminó ${d.count ?? "varios"} socios`;
+    case "settings.updated":
+      return `actualizó la configuración (${d.fields ?? entry.details ?? "cambios generales"})`;
+    case "mp.connect_url_requested":
+      return "solicitó el enlace de conexión de Mercado Pago";
+    case "mp.disconnected":
+      return "desconectó Mercado Pago";
+    case "helipagos.connected":
+      return "conectó Helipagos";
+    case "helipagos.disconnected":
+      return "desconectó Helipagos";
+    case "macroclick.connected":
+      return "conectó Macro Click de Pago";
+    case "macroclick.disconnected":
+      return "desconectó Macro Click de Pago";
+    case "admin.password_reset":
+      return `restableció la contraseña del administrador ${auditTargetId(entry.target)}`;
+    case "gestor.created":
+      return `creó al gestor ${d.email ?? ""}`;
+    case "gestor.shared_password_updated":
+      return "actualizó la contraseña compartida de gestores";
+    case "gestor.activo_updated":
+      return `marcó al gestor ${auditTargetId(entry.target)} como ${auditBool(d.activo, "activo", "inactivo")}`;
+    case "meter.created":
+      return `creó el medidor ${d.codigo ?? ""}`;
+    case "cut.ordered":
+      return `ordenó el corte ${auditTargetId(entry.target)}`;
+    case "gestor.profile_selected":
+      return "ingresó con perfil gestor";
+    case "gestor.qr_login_approved":
+      return "aprobó un ingreso por QR";
+    case "gestor.qr_login_denied":
+      return "rechazó un ingreso por QR";
+    case "gestor.reading_updated":
+      return `actualizó la lectura ${auditTargetId(entry.target)}`;
+    case "route.created":
+      return "creó una ruta";
+    case "route.auto_generated":
+      return "generó rutas automáticamente";
+    case "route.updated":
+      return "modificó una ruta";
+    case "route.deleted":
+      return "eliminó una ruta";
+    case "demo.reset":
+      return "reinició la demo";
+    case "cut.cancelled":
+      return `canceló o retiró la orden del corte ${auditTargetId(entry.target)}`;
+    case "cut.restore_ordered":
+      return `ordenó la reposición del corte ${auditTargetId(entry.target)}`;
+    case "cut.executed":
+      return `ejecutó el corte ${auditTargetId(entry.target)}`;
+    case "cut.restored":
+      return `repuso el servicio del corte ${auditTargetId(entry.target)}`;
+    default:
+      return `${entry.action.replace(/[._]/g, " ")}${entry.details ? ` (${entry.details})` : ""}`;
+  }
+}
+
+type AuditFilter = "todo" | "cortes" | "accesos" | "sistema";
+
+const AUDIT_FILTERS: { key: AuditFilter; label: string }[] = [
+  { key: "todo", label: "Todo" },
+  { key: "cortes", label: "Cortes" },
+  { key: "accesos", label: "Accesos" },
+  { key: "sistema", label: "Sistema" },
+];
+
+function auditCategory(action: string): Exclude<AuditFilter, "todo"> {
+  if (action.startsWith("cut.")) return "cortes";
+  if (action === "gestor.profile_selected" || action.startsWith("gestor.qr_login")) return "accesos";
+  return "sistema";
+}
+
+function auditTag(entry: AuditLogEntry): string | null {
+  if (entry.action !== "cut.ordered") return null;
+  const motivo = /motivo=(.*)$/.exec(entry.details ?? "")?.[1]?.trim();
+  return !motivo || motivo === "None" ? "sin motivo" : motivo;
+}
+
+function auditTime(iso: string) {
+  return new Date(iso).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function auditDayKey(iso: string) {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+function auditDayLabel(iso: string) {
+  const d = new Date(iso);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  const date = d.toLocaleDateString("es-AR", { day: "numeric", month: "short" }).replace(".", "");
+  if (auditDayKey(iso) === auditDayKey(today.toISOString())) return `Hoy · ${date}`;
+  if (auditDayKey(iso) === auditDayKey(yesterday.toISOString())) return `Ayer · ${date}`;
+  return date;
+}
+
+type AuditRow = { entry: AuditLogEntry; count: number; since: string };
+
+// Colapsa ingresos repetidos consecutivos (mismo actor y acción) en una sola fila "×N desde HH:MM".
+function groupAuditRows(entries: AuditLogEntry[]): { day: string; rows: AuditRow[] }[] {
+  const days: { key: string; day: string; rows: AuditRow[] }[] = [];
+  for (const entry of entries) {
+    const key = auditDayKey(entry.created_at);
+    let group = days[days.length - 1];
+    if (!group || group.key !== key) {
+      group = { key, day: auditDayLabel(entry.created_at), rows: [] };
+      days.push(group);
+    }
+    const prev = group.rows[group.rows.length - 1];
+    if (
+      prev &&
+      auditCategory(entry.action) === "accesos" &&
+      prev.entry.action === entry.action &&
+      prev.entry.actor_email === entry.actor_email
+    ) {
+      prev.count += 1;
+      prev.since = entry.created_at;
+    } else {
+      group.rows.push({ entry, count: 1, since: entry.created_at });
+    }
+  }
+  return days;
+}
+
+function generatePassword() {
+  const chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = crypto.getRandomValues(new Uint8Array(12));
+  return Array.from(bytes, (b) => chars[b % chars.length]).join("");
+}
+
 type ConfirmState = {
   message: string;
+  title?: string;
+  confirmLabel?: string;
+  danger?: boolean;
   onConfirm: () => void;
 };
 
@@ -72,6 +263,8 @@ export default function AdminDashboard() {
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [sociosQuery, setSociosQuery] = useState("");
+  const [sociosFilter, setSociosFilter] = useState<"todos" | "saldo" | "aldia">("todos");
+  const [selectMode, setSelectMode] = useState(false);
 
   const [file, setFile] = useState<File | null>(null);
   const now = new Date();
@@ -81,10 +274,30 @@ export default function AdminDashboard() {
   const [importError, setImportError] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
 
+  const [pdfFiles, setPdfFiles] = useState<File[]>([]);
+  const [importKind, setImportKind] = useState<"planilla" | "pdf">("planilla");
+  const [pdfImporting, setPdfImporting] = useState(false);
+  const [pdfImportError, setPdfImportError] = useState<string | null>(null);
+  const [pdfJob, setPdfJob] = useState<PdfImportJob | null>(null);
+
+  const [qrCode, setQrCode] = useState<string | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [qrStatus, setQrStatus] = useState<GestorQrStatus | null>(null);
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qrError, setQrError] = useState<string | null>(null);
+
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [markingPaidId, setMarkingPaidId] = useState<number | null>(null);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
+  const lastConfirmState = useRef<ConfirmState | null>(null);
+  if (confirmState) lastConfirmState.current = confirmState;
+  const [toast, setToast] = useState<string | null>(null);
+
+  const [cutMember, setCutMember] = useState<MemberRow | null>(null);
+  const [cutDrawerOpen, setCutDrawerOpen] = useState(false);
+  const [cutsReloadKey, setCutsReloadKey] = useState(0);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerMember, setDrawerMember] = useState<MemberRow | null>(null);
@@ -210,6 +423,59 @@ export default function AdminDashboard() {
     }
   }
 
+  // Macro Click de Pago (Banco Macro): integración NO OFICIAL, reconstruida a
+  // partir de un plugin de terceros (ver backend/app/services/macroclick.py).
+  const [macroclickStatus, setMacroclickStatus] = useState<MacroclickStatus | null>(null);
+  const [macroclickLoading, setMacroclickLoading] = useState(false);
+  const [macroclickError, setMacroclickError] = useState<string | null>(null);
+  const [macroclickForm, setMacroclickForm] = useState({
+    comercio_id: "",
+    sucursal: "0000000000",
+    secret_key: "",
+    environment: "sandbox" as "sandbox" | "production",
+  });
+
+  const loadMacroclickStatus = useCallback(() => {
+    if (!token) return;
+    getMacroclickStatus(tenantSlug, token)
+      .then(setMacroclickStatus)
+      .catch(() => setMacroclickError("No se pudo cargar el estado de Macro Click de Pago"));
+  }, [tenantSlug, token]);
+
+  useEffect(() => {
+    loadMacroclickStatus();
+  }, [loadMacroclickStatus]);
+
+  async function handleMacroclickConnect(e: FormEvent) {
+    e.preventDefault();
+    if (!token) return;
+    setMacroclickLoading(true);
+    setMacroclickError(null);
+    try {
+      const status = await connectMacroclick(tenantSlug, token, macroclickForm);
+      setMacroclickStatus(status);
+      setMacroclickForm({ comercio_id: "", sucursal: "0000000000", secret_key: "", environment: "sandbox" });
+    } catch (err) {
+      setMacroclickError(err instanceof ApiError ? err.message : "No se pudo conectar Macro Click de Pago");
+    } finally {
+      setMacroclickLoading(false);
+    }
+  }
+
+  async function handleMacroclickDisconnect() {
+    if (!token) return;
+    setMacroclickLoading(true);
+    setMacroclickError(null);
+    try {
+      const status = await disconnectMacroclick(tenantSlug, token);
+      setMacroclickStatus(status);
+    } catch (err) {
+      setMacroclickError(err instanceof ApiError ? err.message : "No se pudo desconectar Macro Click de Pago");
+    } finally {
+      setMacroclickLoading(false);
+    }
+  }
+
   const [currentAdmin, setCurrentAdmin] = useState<AdminUserOut | null>(null);
   const isOwner = currentAdmin?.role === "owner";
 
@@ -219,6 +485,8 @@ export default function AdminDashboard() {
   const [newAdminPassword, setNewAdminPassword] = useState("");
   const [newAdminRole, setNewAdminRole] = useState<AdminRole>("staff");
   const [adminsSaving, setAdminsSaving] = useState(false);
+  const [showInvite, setShowInvite] = useState(false);
+  const [auditFilter, setAuditFilter] = useState<AuditFilter>("todo");
 
   const [auditLog, setAuditLog] = useState<AuditLogEntry[]>([]);
 
@@ -261,6 +529,7 @@ export default function AdminDashboard() {
       setNewAdminEmail("");
       setNewAdminPassword("");
       setNewAdminRole("staff");
+      setShowInvite(false);
       loadAdmins();
     } catch (err) {
       setAdminsError(err instanceof ApiError ? err.message : "No se pudo crear el administrador");
@@ -380,13 +649,17 @@ export default function AdminDashboard() {
 
   const filteredMembers = useMemo(() => {
     const q = sociosQuery.trim().toLowerCase();
-    if (!q) return members;
-    return members.filter((m) =>
-      [m.nombre, m.identificador, m.numero_socio].some((field) =>
+    return members.filter((m) => {
+      if (sociosFilter === "saldo" && m.saldo_total <= 0) return false;
+      if (sociosFilter === "aldia" && m.saldo_total > 0) return false;
+      if (!q) return true;
+      return [m.nombre, m.identificador, m.numero_socio].some((field) =>
         field?.toLowerCase().includes(q),
-      ),
-    );
-  }, [members, sociosQuery]);
+      );
+    });
+  }, [members, sociosQuery, sociosFilter]);
+
+  const sociosConSaldo = useMemo(() => members.filter((m) => m.saldo_total > 0).length, [members]);
 
   const stats = useMemo(
     () => ({
@@ -396,8 +669,103 @@ export default function AdminDashboard() {
     [members],
   );
 
+  useEffect(() => {
+    if (!pdfJob || !token || (pdfJob.status !== "pending" && pdfJob.status !== "running")) return;
+    const timer = setInterval(() => {
+      getPdfImportStatus(tenantSlug, token, pdfJob.id)
+        .then((job) => {
+          setPdfJob(job);
+          if (job.status === "done") refresh();
+        })
+        .catch((err) => setPdfImportError(err instanceof ApiError ? err.message : "No se pudo consultar el progreso"));
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [pdfJob, token, tenantSlug, refresh]);
+
+  // Polls while a QR code is live so the admin sees the moment a device
+  // scans it (pending -> claimed) without having to refresh.
+  useEffect(() => {
+    if (!qrCode || !token || (qrStatus !== "pending" && qrStatus !== "claimed")) return;
+    const timer = setInterval(() => {
+      getGestorQrStatus(tenantSlug, token, qrCode)
+        .then((result) => {
+          if (result.status === "expired") {
+            // El código venció solo: lo reemplazamos por uno nuevo sin que
+            // el admin tenga que tocar nada.
+            handleGenerateQr();
+          } else {
+            setQrStatus(result.status);
+          }
+        })
+        .catch(() => {});
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [qrCode, qrStatus, token, tenantSlug]);
+
   if (!token) {
     return <Navigate to={`/${tenantSlug}/admin`} replace />;
+  }
+
+  async function handleImportPdf(e: FormEvent) {
+    e.preventDefault();
+    if (pdfFiles.length === 0 || !token) return;
+    setPdfImporting(true);
+    setPdfImportError(null);
+    setPdfJob(null);
+    try {
+      const job = await importPdf(tenantSlug, token, pdfFiles, year, month);
+      setPdfJob(job);
+    } catch (err) {
+      setPdfImportError(err instanceof ApiError ? err.message : "Ocurrió un error al importar");
+    } finally {
+      setPdfImporting(false);
+    }
+  }
+
+  async function handleGenerateQr() {
+    if (!token) return;
+    setQrLoading(true);
+    setQrError(null);
+    try {
+      const { code } = await startGestorQr(tenantSlug, token);
+      const qrContent = `coopera-gestor://login?slug=${encodeURIComponent(tenantSlug)}&code=${encodeURIComponent(code)}`;
+      const dataUrl = await QRCode.toDataURL(qrContent, { width: 280, margin: 1 });
+      setQrCode(code);
+      setQrDataUrl(dataUrl);
+      setQrStatus("pending");
+    } catch (err) {
+      setQrError(err instanceof ApiError ? err.message : "No se pudo generar el código QR");
+    } finally {
+      setQrLoading(false);
+    }
+  }
+
+  async function handleApproveQr() {
+    if (!token || !qrCode) return;
+    setQrLoading(true);
+    setQrError(null);
+    try {
+      const result = await approveGestorQr(tenantSlug, token, qrCode);
+      setQrStatus(result.status);
+    } catch (err) {
+      setQrError(err instanceof ApiError ? err.message : "No se pudo confirmar el dispositivo");
+    } finally {
+      setQrLoading(false);
+    }
+  }
+
+  async function handleDenyQr() {
+    if (!token || !qrCode) return;
+    setQrLoading(true);
+    setQrError(null);
+    try {
+      const result = await denyGestorQr(tenantSlug, token, qrCode);
+      setQrStatus(result.status);
+    } catch (err) {
+      setQrError(err instanceof ApiError ? err.message : "No se pudo rechazar el dispositivo");
+    } finally {
+      setQrLoading(false);
+    }
   }
 
   function toggleSelected(id: number) {
@@ -422,6 +790,30 @@ export default function AdminDashboard() {
         return next;
       }
       return new Set([...prev, ...visibleIds]);
+    });
+  }
+
+  function handleMarkOldestPaid(member: MemberRow) {
+    setConfirmState({
+      title: "Confirmar pago",
+      confirmLabel: "Marcar pagada",
+      danger: false,
+      message: `¿Marcar como pagada la factura impaga más antigua de ${member.nombre}? Si tiene varios períodos adeudados, las demás quedan impagas.`,
+      onConfirm: async () => {
+        setMarkingPaidId(member.id);
+        setConfirmState(null);
+        try {
+          await markOldestInvoicePaid(tenantSlug, token!, member.id);
+          refresh();
+          setToast(`Factura de ${member.nombre} marcada como pagada`);
+        } catch (err) {
+          setDeleteError(
+            err instanceof ApiError ? err.message : "No se pudo marcar la factura como pagada",
+          );
+        } finally {
+          setMarkingPaidId(null);
+        }
+      },
     });
   }
 
@@ -517,10 +909,12 @@ export default function AdminDashboard() {
     }
   }
 
-  const accent = settings?.primary_color ?? "#2f5fe0";
+  const yearOptions = Array.from({ length: 6 }, (_, i) => now.getFullYear() - 4 + i);
+  const canImport = importKind === "planilla" ? !!file : pdfFiles.length > 0;
+  const busy = importKind === "planilla" ? importing : pdfImporting;
 
   return (
-    <div className="admin-panel" style={{ ["--accent" as string]: accent }}>
+    <div className="admin-panel">
       <aside className="admin-sidebar">
         <div className="admin-sidebar-brand">
           <LogoPlaceholder src={settings?.logo_primary_url} alt={settings?.name} />
@@ -563,28 +957,37 @@ export default function AdminDashboard() {
         <main className="admin-main">
           <div className="admin-main-inner">
           {section === "principal" && (
-            <div className="admin-stats">
-              <div className="admin-stat-card">
-                <span className="admin-stat-label">Socios activos</span>
-                <span className="admin-stat-value">{stats.socios}</span>
+            <header className="principal-header">
+              <div>
+                <h1 className="principal-title">Importar período</h1>
+                <p className="principal-subtitle">Cargá los consumos o boletas del mes para tus socios.</p>
               </div>
-              <div className="admin-stat-card">
-                <span className="admin-stat-label">Saldo a cobrar</span>
-                <span className="admin-stat-value">{money(stats.saldo)}</span>
+              <div className="admin-stats">
+                <div className="admin-stat-card">
+                  <span className="admin-stat-label">Socios activos</span>
+                  <span className="admin-stat-value">{stats.socios}</span>
+                </div>
+                <div className="admin-stat-card">
+                  <span className="admin-stat-label">Saldo a cobrar</span>
+                  <span className="admin-stat-value">{money(stats.saldo)}</span>
+                </div>
               </div>
-            </div>
+            </header>
           )}
 
-          {section === "config" && (
+          <div className="settings-panel">
+      {section === "config" && (
       <form onSubmit={handleSaveSettings}>
-      <div className="card">
+      <div className="card settings-section">
+        <div className="settings-section-info">
         <div className="card-head">
           <h2>Identidad</h2>
         </div>
         <p className="muted small">
           Logos y color destacado que se muestran en el portal de socios.
         </p>
-
+        </div>
+        <div className="settings-section-body">
         <div className="settings-logos">
           <div className="settings-logo-field">
             <div className="settings-logo-row">
@@ -682,16 +1085,19 @@ export default function AdminDashboard() {
             </div>
           </div>
         </div>
+        </div>
       </div>
 
-      <div className="card">
+      <div className="card settings-section">
+        <div className="settings-section-info">
         <div className="card-head">
           <h2>Contacto</h2>
         </div>
         <p className="muted small">
           Datos de contacto que se muestran en el portal de socios.
         </p>
-
+        </div>
+        <div className="settings-section-body">
         <div className="settings-form">
           <label>
             Email de contacto
@@ -732,12 +1138,14 @@ export default function AdminDashboard() {
           {settingsSaved && <p className="success">Configuración guardada.</p>}
           {settingsError && <p className="error">{settingsError}</p>}
         </div>
+        </div>
       </div>
       </form>
       )}
 
       {section === "config" && (
-      <div className="card">
+      <div className="card settings-section">
+        <div className="settings-section-info">
         <div className="card-head">
           <h2>Mercado Pago</h2>
         </div>
@@ -746,7 +1154,8 @@ export default function AdminDashboard() {
           boletas online. El dinero se acredita directamente en tu cuenta de Mercado Pago — Coopera
           nunca lo recibe ni lo retiene.
         </p>
-
+        </div>
+        <div className="settings-section-body">
         {mpResult === "success" && <p className="success">Mercado Pago conectado correctamente.</p>}
         {mpResult === "error" && (
           <p className="error">No se pudo completar la conexión con Mercado Pago. Probá de nuevo.</p>
@@ -784,11 +1193,13 @@ export default function AdminDashboard() {
           </div>
         )}
         {mpError && <p className="error">{mpError}</p>}
+        </div>
       </div>
       )}
 
       {section === "config" && (
-      <div className="card">
+      <div className="card settings-section">
+        <div className="settings-section-info">
         <div className="card-head">
           <h2>Helipagos</h2>
         </div>
@@ -798,7 +1209,8 @@ export default function AdminDashboard() {
           falta autorizar nada: pegá el token y el apikey de webhook que te dio Helipagos al darte
           de alta.
         </p>
-
+        </div>
+        <div className="settings-section-body">
         {helipagosStatus && !isOwner && (
           <p className="muted small">
             Solo un administrador con rol "owner" puede conectar o desconectar Helipagos.
@@ -862,188 +1274,455 @@ export default function AdminDashboard() {
           </form>
         )}
         {helipagosError && <p className="error">{helipagosError}</p>}
+        </div>
+      </div>
+      )}
+
+      {section === "config" && (
+      <div className="card settings-section">
+        <div className="settings-section-info">
+        <div className="card-head">
+          <h2>Macro Click de Pago (no oficial)</h2>
+        </div>
+        <p className="muted small">
+          Conectá las credenciales de Macro Click de Pago (Banco Macro) que te dio tu ejecutivo
+          de cuenta: Id de comercio, sucursal y secret key. ⚠️ A diferencia de Mercado Pago y
+          Helipagos, esta integración no está basada en documentación oficial del banco — se
+          reconstruyó a partir de un plugin de terceros, así que puede haber diferencias con el
+          comportamiento real. Probala en sandbox antes de usarla en producción.
+        </p>
+        </div>
+        <div className="settings-section-body">
+        {macroclickStatus && !isOwner && (
+          <p className="muted small">
+            Solo un administrador con rol "owner" puede conectar o desconectar Macro Click de Pago.
+          </p>
+        )}
+
+        {macroclickStatus?.connected && isOwner && (
+          <div className="mp-connect">
+            <p className="success">
+              Conectado ({macroclickStatus.environment === "production" ? "producción" : "sandbox"})
+            </p>
+            <button
+              type="button"
+              className="btn-danger"
+              disabled={macroclickLoading}
+              onClick={handleMacroclickDisconnect}
+            >
+              {macroclickLoading ? "Desconectando..." : "Desconectar Macro Click de Pago"}
+            </button>
+          </div>
+        )}
+
+        {macroclickStatus && !macroclickStatus.connected && isOwner && (
+          <form className="settings-form" onSubmit={handleMacroclickConnect}>
+            <label>
+              Id de comercio
+              <input
+                value={macroclickForm.comercio_id}
+                onChange={(e) => setMacroclickForm((f) => ({ ...f, comercio_id: e.target.value }))}
+                placeholder="IdComercio provisto por Banco Macro"
+                required
+              />
+            </label>
+            <label>
+              Sucursal
+              <input
+                value={macroclickForm.sucursal}
+                onChange={(e) => setMacroclickForm((f) => ({ ...f, sucursal: e.target.value }))}
+                placeholder="0000000000"
+                required
+              />
+            </label>
+            <label>
+              Secret key
+              <input
+                value={macroclickForm.secret_key}
+                onChange={(e) => setMacroclickForm((f) => ({ ...f, secret_key: e.target.value }))}
+                placeholder="Secret key provista por Banco Macro"
+                required
+              />
+            </label>
+            <label>
+              Entorno
+              <select
+                value={macroclickForm.environment}
+                onChange={(e) =>
+                  setMacroclickForm((f) => ({
+                    ...f,
+                    environment: e.target.value as "sandbox" | "production",
+                  }))
+                }
+              >
+                <option value="sandbox">Sandbox (pruebas)</option>
+                <option value="production">Producción</option>
+              </select>
+            </label>
+            <button type="submit" disabled={macroclickLoading}>
+              {macroclickLoading ? "Conectando..." : "Conectar Macro Click de Pago"}
+            </button>
+          </form>
+        )}
+        {macroclickError && <p className="error">{macroclickError}</p>}
+        </div>
       </div>
       )}
 
       {section === "config" && isOwner && (
-      <div className="card admins-card">
+      <div className="card settings-section admins-card">
+        <div className="settings-section-info">
         <div className="card-head">
           <h2>Administradores</h2>
         </div>
-
-        <div className="role-legend">
+        <p className="muted small">Quiénes pueden entrar al panel y qué pueden hacer.</p>
+        <dl className="role-legend">
           <div className="role-legend-item">
-            <span className="role-chip role-chip-owner">
-              <Crown size={13} aria-hidden="true" /> owner
-            </span>
-            <p className="muted small">Conecta o desconecta Mercado Pago y gestiona otros administradores.</p>
+            <dt>Owner</dt>
+            <dd className="muted small">Medios de cobro (Mercado Pago) y gestión del equipo.</dd>
           </div>
           <div className="role-legend-item">
-            <span className="role-chip role-chip-staff">
-              <UserCog size={13} aria-hidden="true" /> staff
-            </span>
-            <p className="muted small">Accede al resto del panel: socios, importaciones y boletas.</p>
+            <dt>Staff</dt>
+            <dd className="muted small">Socios, importaciones y boletas.</dd>
           </div>
+        </dl>
         </div>
-
-        <table className="socios-table admins-table">
-          <thead>
-            <tr>
-              <th>Email</th>
-              <th>Rol</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {admins.map((a) => {
-              const isYou = a.id === currentAdmin?.id;
-              return (
-                <tr key={a.id}>
-                  <td data-label="Email">
+        <div className="settings-section-body">
+        <ul className="admin-list">
+          {admins.map((a) => {
+            const isYou = a.id === currentAdmin?.id;
+            return (
+              <li key={a.id} className="admin-row">
+                <span className="admin-avatar" aria-hidden="true">{a.email.charAt(0).toUpperCase()}</span>
+                <div className="admin-id">
+                  <span className="admin-email">
                     {a.email}
-                    {isYou && <span className="you-badge">Tú</span>}
-                  </td>
-                  <td data-label="Rol">
-                    <select
-                      className={`role-select role-select-${a.role}`}
-                      value={a.role}
-                      onChange={(e) => handleChangeAdminRole(a, e.target.value as AdminRole)}
-                      disabled={isYou}
-                      title={isYou ? "No podés modificar tu propio rol" : undefined}
-                    >
-                      <option value="owner">owner</option>
-                      <option value="staff">staff</option>
-                    </select>
-                  </td>
-                  <td className="socios-table-actions">
+                    {isYou && <span className="you-badge">Vos</span>}
+                  </span>
+                  <span className="muted small">{isYou ? "Tu cuenta" : "Activo"}</span>
+                </div>
+                <div
+                  className="role-toggle"
+                  role="group"
+                  aria-label={`Rol de ${a.email}`}
+                  title={isYou ? "No podés modificar tu propio rol" : undefined}
+                >
+                  {(["owner", "staff"] as AdminRole[]).map((r) => (
                     <button
+                      key={r}
                       type="button"
-                      className="btn-danger"
+                      className={a.role === r ? "active" : ""}
+                      aria-pressed={a.role === r}
                       disabled={isYou}
-                      title={isYou ? "No podés eliminar tu propia cuenta" : undefined}
-                      onClick={() => handleRemoveAdmin(a)}
+                      onClick={() => a.role !== r && handleChangeAdminRole(a, r)}
                     >
-                      <Trash2 size={14} aria-hidden="true" />
-                      Eliminar
+                      {r === "owner" ? "Owner" : "Staff"}
                     </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className="admin-remove"
+                  disabled={isYou}
+                  title={isYou ? "No podés eliminar tu propia cuenta" : undefined}
+                  onClick={() => handleRemoveAdmin(a)}
+                >
+                  Quitar
+                </button>
+              </li>
+            );
+          })}
+        </ul>
 
-        <div className="admins-divider" />
-
-        <div className="admins-invite-head">
-          <UserPlus size={16} aria-hidden="true" />
-          <h3>Invitar nuevo administrador</h3>
-        </div>
-        <form className="settings-form" onSubmit={handleCreateAdmin}>
-          <label>
-            Email
-            <input
-              type="email"
-              value={newAdminEmail}
-              onChange={(e) => setNewAdminEmail(e.target.value)}
-              required
-            />
-          </label>
-          <label>
-            Contraseña
-            <input
-              type="password"
-              value={newAdminPassword}
-              onChange={(e) => setNewAdminPassword(e.target.value)}
-              required
-              minLength={8}
-            />
-          </label>
-          <label>
-            Rol
-            <select value={newAdminRole} onChange={(e) => setNewAdminRole(e.target.value as AdminRole)}>
-              <option value="staff">staff</option>
-              <option value="owner">owner</option>
-            </select>
-          </label>
-          <button type="submit" disabled={adminsSaving}>
-            {adminsSaving ? "Creando..." : "Invitar administrador"}
+        {!showInvite && (
+          <button type="button" className="admin-invite-open" onClick={() => setShowInvite(true)}>
+            + Invitar administrador
           </button>
+        )}
+
+        {showInvite && (
+        <form className="admin-invite" onSubmit={handleCreateAdmin}>
+          <div className="admin-invite-head">
+            <h3>Nuevo administrador</h3>
+            <button type="button" className="link-btn" onClick={() => setShowInvite(false)}>
+              Cancelar
+            </button>
+          </div>
+          <div className="admin-invite-fields">
+            <label>
+              <span className="field-label">Email</span>
+              <input
+                type="email"
+                value={newAdminEmail}
+                onChange={(e) => setNewAdminEmail(e.target.value)}
+                placeholder="nombre@cooperativa.coop"
+                required
+              />
+            </label>
+            <label>
+              <span className="field-label field-label-row">
+                Contraseña temporal
+                <button
+                  type="button"
+                  className="link-btn link-btn-strong"
+                  onClick={() => setNewAdminPassword(generatePassword())}
+                >
+                  Generar
+                </button>
+              </span>
+              <input
+                type="text"
+                className="mono"
+                value={newAdminPassword}
+                onChange={(e) => setNewAdminPassword(e.target.value)}
+                placeholder="Mínimo 8 caracteres"
+                required
+                minLength={8}
+              />
+            </label>
+          </div>
+          <div className="field-label">Rol</div>
+          <div className="role-options">
+            {(
+              [
+                ["staff", "Staff", "Socios, importaciones y boletas."],
+                ["owner", "Owner", "Medios de cobro y gestión del equipo."],
+              ] as [AdminRole, string, string][]
+            ).map(([value, label, hint]) => (
+              <label key={value} className={`role-option${newAdminRole === value ? " selected" : ""}`}>
+                <input
+                  type="radio"
+                  name="new-admin-role"
+                  value={value}
+                  checked={newAdminRole === value}
+                  onChange={() => setNewAdminRole(value)}
+                />
+                <span className="role-option-radio" aria-hidden="true" />
+                <span className="role-option-text">
+                  <strong>{label}</strong>
+                  <span className="muted small">{hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          <div className="admin-invite-actions">
+            <button type="submit" disabled={adminsSaving || !newAdminEmail || newAdminPassword.length < 8}>
+              {adminsSaving ? "Creando..." : "Invitar"}
+            </button>
+            <span className="muted small">
+              Compartí la contraseña por un canal seguro; se pide cambiarla al primer ingreso.
+            </span>
+          </div>
         </form>
+        )}
         {adminsError && <p className="error">{adminsError}</p>}
+        </div>
       </div>
       )}
 
       {section === "config" && isOwner && (
-      <div className="card">
+      <div className="card settings-section">
+        <div className="settings-section-info">
         <div className="card-head">
           <h2>Actividad reciente</h2>
         </div>
-        <p className="muted small">Últimas acciones sensibles realizadas en esta cooperativa.</p>
+        <p className="muted small">Acciones sensibles realizadas en esta cooperativa.</p>
+        <div className="audit-filters" role="group" aria-label="Filtrar actividad">
+          {AUDIT_FILTERS.map(({ key, label }) => {
+            const count = key === "todo" ? auditLog.length : auditLog.filter((e) => auditCategory(e.action) === key).length;
+            return (
+              <button
+                key={key}
+                type="button"
+                className={auditFilter === key ? "active" : ""}
+                aria-pressed={auditFilter === key}
+                onClick={() => setAuditFilter(key)}
+              >
+                <span>{label}</span>
+                <span className="audit-filter-count">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+        </div>
+        <div className="settings-section-body audit-scroll">
         {auditLog.length === 0 && <p className="muted small">Todavía no hay actividad registrada.</p>}
-        {auditLog.length > 0 && (
-          <ul className="audit-log-list">
-            {auditLog.map((entry) => (
-              <li key={entry.id}>
-                <span className="muted small">{new Date(entry.created_at).toLocaleString("es-AR")}</span>{" "}
-                — <strong>{entry.actor_email}</strong> ({entry.actor_type}): {entry.action}
-                {entry.details ? ` — ${entry.details}` : ""}
-              </li>
-            ))}
-          </ul>
-        )}
+        {auditLog.length > 0 &&
+          groupAuditRows(
+            auditFilter === "todo" ? auditLog : auditLog.filter((e) => auditCategory(e.action) === auditFilter),
+          ).map((group) => (
+            <section key={group.day} className="audit-day">
+              <h3>{group.day}</h3>
+              <ul className="audit-log-list">
+                {group.rows.map(({ entry, count, since }) => {
+                  const tag = auditTag(entry);
+                  return (
+                    <li key={entry.id}>
+                      <span className="audit-time">{auditTime(entry.created_at)}</span>
+                      <span className={`audit-dot audit-dot-${auditCategory(entry.action)}`} aria-hidden="true" />
+                      <span className="audit-text">
+                        <strong>{entry.actor_email}</strong> {formatAuditAction(entry)}
+                        {tag && <span className="audit-tag">{tag}</span>}
+                        {count > 1 && <span className="audit-tag">×{count} desde {auditTime(since)}</span>}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ))}
+        </div>
       </div>
       )}
 
-      {section === "principal" && (
-      <div className="card">
-        <div className="card-head">
-          <h2>Importar planilla del período</h2>
-        </div>
-        <p className="muted small">
-          Columnas requeridas: <code>numero_socio</code>, <code>nombre</code>, <code>identificador</code>,{" "}
-          <code>consumo</code>, <code>monto</code>. Opcional: <code>vencimiento</code>. Formato .csv o .xlsx.
-        </p>
-        <form className="import-form" onSubmit={handleImport} style={{ marginTop: "var(--space-4)" }}>
-          <label>
-            Año
-            <input type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} required />
-          </label>
-          <label>
-            Mes
-            <select value={month} onChange={(e) => setMonth(Number(e.target.value))}>
-              {MESES.slice(1).map((m, i) => (
-                <option key={m} value={i + 1}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="file-field">
-            <span>Planilla</span>
-            <FilePicker id="import-file" file={file} onChange={setFile} accept=".csv,.xlsx,.xls" required />
-          </div>
-          <button type="submit" disabled={importing || !file}>
-            {importing ? "Importando..." : "Importar"}
-          </button>
-        </form>
-        {importError && <p className="error">{importError}</p>}
-        {importResult && (
-          <p className="success">
-            Listo: {importResult.rows_processed} filas procesadas ({importResult.members_created} socios nuevos,{" "}
-            {importResult.members_updated} actualizados) para {MESES[importResult.period_month]} {importResult.period_year}.
-          </p>
-        )}
       </div>
+
+      {section === "principal" && (
+      <form className="import-panel" onSubmit={importKind === "planilla" ? handleImport : handleImportPdf}>
+        <section className="import-step">
+          <span className="import-step-num">1</span>
+          <div className="import-step-body">
+            <h2>Período</h2>
+            <p className="import-step-desc">Mes al que corresponden los datos.</p>
+            <div className="import-period">
+              <select value={month} onChange={(e) => setMonth(Number(e.target.value))} aria-label="Mes">
+                {MESES.slice(1).map((m, i) => (
+                  <option key={m} value={i + 1}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+              <select value={year} onChange={(e) => setYear(Number(e.target.value))} aria-label="Año">
+                {yearOptions.map((y) => (
+                  <option key={y} value={y}>
+                    {y}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </section>
+
+        <section className="import-step">
+          <span className="import-step-num">2</span>
+          <div className="import-step-body">
+            <h2>Tipo de archivo</h2>
+            <p className="import-step-desc">Elegí cómo vas a cargar la información.</p>
+            <div className="import-kinds" role="radiogroup" aria-label="Tipo de archivo">
+              {(
+                [
+                  { key: "planilla", title: "Planilla de consumos", desc: "Un archivo .csv o .xlsx con una fila por socio." },
+                  { key: "pdf", title: "Boletas en PDF", desc: "Uno o varios PDF; cada página corresponde a un socio." },
+                ] as const
+              ).map((opt) => (
+                <label key={opt.key} className={`import-kind${importKind === opt.key ? " is-active" : ""}`}>
+                  <input
+                    type="radio"
+                    name="import-kind"
+                    checked={importKind === opt.key}
+                    onChange={() => setImportKind(opt.key)}
+                  />
+                  <span className="import-kind-radio" aria-hidden="true" />
+                  <span className="import-kind-text">
+                    <span className="import-kind-title">{opt.title}</span>
+                    <span className="import-kind-desc">{opt.desc}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="import-step">
+          <span className="import-step-num">3</span>
+          <div className="import-step-body">
+            <h2>Archivo</h2>
+            {importKind === "planilla" ? (
+              <>
+                <p className="import-step-desc">La primera fila debe tener estos encabezados.</p>
+                <div className="import-columns">
+                  <span className="import-columns-label">Columnas:</span>
+                  {["numero_socio", "nombre", "identificador", "consumo", "monto"].map((c) => (
+                    <code key={c}>{c}</code>
+                  ))}
+                  <span className="import-columns-optional">vencimiento (opcional)</span>
+                </div>
+                <DropZone
+                  id="import-file"
+                  files={file ? [file] : []}
+                  onChange={(files) => setFile(files[0] ?? null)}
+                  accept=".csv,.xlsx,.xls"
+                  hint=".csv o .xlsx · un archivo"
+                />
+              </>
+            ) : (
+              <>
+                <p className="import-step-desc">
+                  Un PDF por boleta, o uno con varias páginas donde cada página sea un socio.
+                </p>
+                <DropZone
+                  id="import-pdf-files"
+                  files={pdfFiles}
+                  onChange={setPdfFiles}
+                  accept=".pdf"
+                  multiple
+                  hint=".pdf · uno o varios archivos"
+                />
+              </>
+            )}
+
+            {importKind === "planilla" && importError && <p className="error">{importError}</p>}
+            {importKind === "planilla" && importResult && (
+              <p className="success">
+                Listo: {importResult.rows_processed} filas procesadas ({importResult.members_created} socios nuevos,{" "}
+                {importResult.members_updated} actualizados) para {MESES[importResult.period_month]} {importResult.period_year}.
+              </p>
+            )}
+            {importKind === "pdf" && pdfImportError && <p className="error">{pdfImportError}</p>}
+            {importKind === "pdf" && pdfJob && (pdfJob.status === "pending" || pdfJob.status === "running") && (
+              <p className="muted small">
+                Procesando... {pdfJob.processed_pages}/{pdfJob.total_pages} páginas.
+              </p>
+            )}
+            {importKind === "pdf" && pdfJob && pdfJob.status === "done" && (
+              <p className="success">
+                Listo: {pdfJob.processed_pages} páginas procesadas para {MESES[month]} {year}.
+              </p>
+            )}
+            {importKind === "pdf" && pdfJob && pdfJob.status === "error" && (
+              <p className="error">{pdfJob.error ?? "Ocurrió un error al importar"}</p>
+            )}
+          </div>
+        </section>
+
+        <footer className="import-footer">
+          <span className="import-footer-hint">
+            {canImport ? "Todo listo para importar" : importKind === "planilla" ? "Elegí un archivo para continuar" : "Elegí al menos un PDF para continuar"}
+          </span>
+          <button type="submit" disabled={!canImport || busy}>
+            {busy ? "Importando..." : `Importar ${MESES[month]} ${year}`}
+          </button>
+        </footer>
+      </form>
       )}
 
       {section === "socios" && (
-      <div className="card">
+      <div className="card socios-card">
         <div className="card-head">
-          <h2>Socios ({filteredMembers.length}{sociosQuery && `/${members.length}`})</h2>
+          <h2>Socios ({filteredMembers.length}{(sociosQuery || sociosFilter !== "todos") && `/${members.length}`})</h2>
           <button
             type="button"
-            className="btn-danger"
+            className="socios-select-toggle"
+            onClick={() => {
+              if (selectMode) setSelected(new Set());
+              setSelectMode((v) => !v);
+            }}
+          >
+            {selectMode ? "Cancelar" : "Seleccionar"}
+          </button>
+          <button
+            type="button"
+            className="btn-danger socios-delete-btn"
             disabled={selected.size === 0 || deleting}
             onClick={handleDeleteSelected}
           >
@@ -1070,12 +1749,39 @@ export default function AdminDashboard() {
             </button>
           )}
         </div>
+        <div className="socios-chips" role="group" aria-label="Filtrar socios">
+          {(
+            [
+              ["todos", "Todos", members.length],
+              ["saldo", "Con saldo", sociosConSaldo],
+              ["aldia", "Al día", members.length - sociosConSaldo],
+            ] as const
+          ).map(([key, label, count]) => (
+            <button
+              key={key}
+              type="button"
+              className={`socios-chip${sociosFilter === key ? " is-active" : ""}`}
+              aria-pressed={sociosFilter === key}
+              onClick={() => setSociosFilter(key)}
+            >
+              {label} <span className="socios-chip-count">{count}</span>
+            </button>
+          ))}
+        </div>
         {loadError && <p className="error">{loadError}</p>}
         {deleteError && <p className="error">{deleteError}</p>}
         {filteredMembers.length === 0 && members.length > 0 && (
-          <p className="muted small socios-empty">Ningún socio coincide con “{sociosQuery}”.</p>
+          <p className="muted small socios-empty">Ningún socio coincide con la búsqueda.</p>
         )}
-        <table className="socios-table">
+        {selectMode && (
+          <div className="socios-select-bar">
+            <span>{selected.size} seleccionados</span>
+            <button type="button" className="socios-table-link" onClick={toggleSelectAll}>
+              Seleccionar todos
+            </button>
+          </div>
+        )}
+        <table className={`socios-table${selectMode ? " is-selecting" : ""}`}>
           <thead>
             <tr>
               <th>
@@ -1095,8 +1801,8 @@ export default function AdminDashboard() {
           </thead>
           <tbody>
             {filteredMembers.map((m) => (
-              <tr key={m.id}>
-                <td className="socios-table-check">
+              <tr key={m.id} onClick={() => openInvoiceDrawer(m)}>
+                <td className="socios-table-check" onClick={(e) => e.stopPropagation()}>
                   <input
                     type="checkbox"
                     checked={selected.has(m.id)}
@@ -1104,27 +1810,104 @@ export default function AdminDashboard() {
                     aria-label={`Seleccionar ${m.nombre}`}
                   />
                 </td>
-                <td data-label="N° Socio">{m.numero_socio}</td>
-                <td data-label="Nombre">{m.nombre}</td>
-                <td data-label="DNI / Medidor">{m.identificador}</td>
-                <td data-label="Saldo">{money(m.saldo_total)}</td>
+                <td data-label="N° Socio" className="socios-table-num">{m.numero_socio}</td>
+                <td data-label="Nombre" className="socios-table-name">{m.nombre}</td>
+                <td data-label="DNI / Medidor" className="socios-table-id">{m.identificador}</td>
+                <td data-label="Saldo" className="socios-table-saldo">
+                  <span className={`saldo-pill${m.saldo_total > 0 ? "" : " saldo-pill-ok"}`}>
+                    {m.saldo_total > 0 ? money(m.saldo_total) : "Al día"}
+                  </span>
+                  {m.corte_estado && (
+                    <span className={`cut-pill is-${m.corte_estado}`}>{ESTADO_LABEL[m.corte_estado]}</span>
+                  )}
+                </td>
                 <td className="socios-table-actions">
-                  <button type="button" onClick={() => openInvoiceDrawer(m)}>
-                    Ver facturas
-                  </button>
                   <button
                     type="button"
-                    className="btn-danger"
-                    disabled={deleting}
-                    onClick={() => handleDeleteOne(m)}
+                    className="socios-table-link"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setCutMember(m);
+                      setCutDrawerOpen(true);
+                    }}
                   >
-                    Eliminar
+                    Ordenar corte
+                  </button>
+                  <button type="button" className="socios-table-link" onClick={() => openInvoiceDrawer(m)}>
+                    Facturas →
                   </button>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+      </div>
+      )}
+
+      {section === "cortes" && token && (
+        <CutsSection
+          tenantSlug={tenantSlug}
+          token={token}
+          reloadKey={cutsReloadKey}
+          onChanged={refresh}
+          onToast={setToast}
+        />
+      )}
+
+      {section === "gestores" && (
+      <div className="card">
+        <div className="card-head">
+          <h2>Ingreso por QR</h2>
+        </div>
+        <p className="muted small">
+          En vez de tipear la contraseña compartida de gestores, un gestor puede escanear este
+          código desde la app y vos confirmás el ingreso acá. El código expira solo a los pocos
+          minutos y sirve una única vez.
+        </p>
+
+        {!qrCode && (
+          <button type="button" disabled={qrLoading} onClick={handleGenerateQr}>
+            {qrLoading ? "Generando..." : "Generar código QR"}
+          </button>
+        )}
+
+        {qrCode && qrDataUrl && (
+          <div className="gestor-qr">
+            {(qrStatus === "pending" || qrStatus === "claimed") && (
+              <img src={qrDataUrl} alt="Código QR para ingreso de gestores" width={220} height={220} />
+            )}
+
+            {qrStatus === "pending" && (
+              <p className="muted small">Esperando que un gestor escanee el código...</p>
+            )}
+
+            {qrStatus === "claimed" && (
+              <div className="gestor-qr-confirm">
+                <p>Un dispositivo escaneó el código. ¿Confirmás que es el gestor?</p>
+                <div className="gestor-qr-confirm-actions">
+                  <button type="button" disabled={qrLoading} onClick={handleApproveQr}>
+                    Confirmar
+                  </button>
+                  <button type="button" className="btn-danger" disabled={qrLoading} onClick={handleDenyQr}>
+                    Rechazar
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {qrStatus === "approved" && <p className="success">Ingreso confirmado. El gestor ya puede elegir su perfil en la app.</p>}
+            {qrStatus === "denied" && <p className="error">Rechazaste este intento de ingreso.</p>}
+            {qrStatus === "expired" && <p className="muted small">El código expiró.</p>}
+
+            {(qrStatus === "approved" || qrStatus === "denied" || qrStatus === "expired") && (
+              <button type="button" disabled={qrLoading} onClick={handleGenerateQr}>
+                {qrLoading ? "Generando..." : "Generar otro código"}
+              </button>
+            )}
+          </div>
+        )}
+
+        {qrError && <p className="error">{qrError}</p>}
       </div>
       )}
         </div>
@@ -1165,19 +1948,11 @@ export default function AdminDashboard() {
                     {inv.pagado ? "Pagada" : "Pendiente"}
                   </span>
                 </div>
-                <div className="invoice-item-details">
-                  <div>
-                    <span className="label">Consumo</span>
-                    <span className="value">{inv.consumo}</span>
-                  </div>
-                  <div>
-                    <span className="label">Monto</span>
-                    <span className="value">{money(inv.monto)}</span>
-                  </div>
-                  <div>
-                    <span className="label">Vencimiento</span>
-                    <span className="value">{inv.vencimiento ?? "-"}</span>
-                  </div>
+                <div className="invoice-item-amount">
+                  <span className="invoice-item-total">{money(inv.monto)}</span>
+                  <span className="invoice-item-meta">
+                    {inv.consumo} kWh · vence {inv.vencimiento ?? "-"}
+                  </span>
                 </div>
                 <button
                   type="button"
@@ -1193,16 +1968,33 @@ export default function AdminDashboard() {
         )}
       </Drawer>
 
+      {token && (
+        <OrderCutDrawer
+          open={cutDrawerOpen}
+          onClose={() => setCutDrawerOpen(false)}
+          tenantSlug={tenantSlug}
+          token={token}
+          member={cutMember}
+          onOrdered={(count) => {
+            setToast(count === 1 ? "Corte ordenado" : `${count} cortes ordenados`);
+            setCutsReloadKey((k) => k + 1);
+            refresh();
+          }}
+        />
+      )}
+
       <ConfirmDialog
         open={confirmState !== null}
-        title="Confirmar eliminación"
-        message={confirmState?.message ?? ""}
-        confirmLabel="Eliminar"
-        danger
+        title={lastConfirmState.current?.title ?? "Confirmar eliminación"}
+        message={lastConfirmState.current?.message ?? ""}
+        confirmLabel={lastConfirmState.current?.confirmLabel ?? "Eliminar"}
+        danger={lastConfirmState.current?.danger ?? true}
         busy={deleting}
-        onConfirm={() => confirmState?.onConfirm()}
+        onConfirm={() => lastConfirmState.current?.onConfirm()}
         onCancel={() => setConfirmState(null)}
       />
+
+      <Toast message={toast} onDismiss={() => setToast(null)} />
     </div>
   );
 }

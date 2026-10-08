@@ -60,6 +60,7 @@ export interface MemberAccount {
   mp_titular: string | null;
   mp_connected: boolean;
   helipagos_connected: boolean;
+  macroclick_connected: boolean;
 }
 
 export interface MpStatus {
@@ -69,6 +70,13 @@ export interface MpStatus {
 }
 
 export interface HelipagosStatus {
+  connected: boolean;
+  environment: "sandbox" | "production";
+}
+
+// Macro Click de Pago (Banco Macro) - integración NO OFICIAL, reconstruida a
+// partir de un plugin de terceros (ver backend/app/services/macroclick.py).
+export interface MacroclickStatus {
   connected: boolean;
   environment: "sandbox" | "production";
 }
@@ -98,6 +106,49 @@ export interface MemberRow {
   nombre: string;
   identificador: string;
   saldo_total: number;
+  corte_estado: CutEstado | null;
+}
+
+export type CutEstado = "ordenado" | "ejecutado" | "reposicion_ordenada" | "repuesto" | "cancelado";
+export type CutMotivo = "impago" | "multa" | "otro";
+
+export interface AdminMeter {
+  id: number;
+  codigo: string;
+  tipo: "luz" | "agua" | "gas";
+  direccion: string | null;
+  activo: boolean;
+  member_id: number;
+  corte_estado: CutEstado | null;
+  corte_id: number | null;
+}
+
+export interface ServiceCut {
+  id: number;
+  meter_id: number;
+  codigo: string;
+  tipo: "luz" | "agua" | "gas";
+  direccion: string | null;
+  member_id: number;
+  numero_socio: string;
+  nombre_socio: string;
+  motivo: CutMotivo;
+  detalle: string | null;
+  estado: CutEstado;
+  ordenado_por_email: string;
+  created_at: string;
+  ejecutado_por_nombre: string | null;
+  ejecutado_at: string | null;
+  ejecucion_nota: string | null;
+  ejecucion_foto_urls: string[] | null;
+  reposicion_ordenada_por_email: string | null;
+  reposicion_ordenada_at: string | null;
+  repuesto_por_nombre: string | null;
+  repuesto_at: string | null;
+  reposicion_nota: string | null;
+  reposicion_foto_urls: string[] | null;
+  cancelado_por_email: string | null;
+  cancelado_at: string | null;
 }
 
 export interface ImportResult {
@@ -115,6 +166,27 @@ export interface TenantSummary {
   admin_count: number;
   member_count: number;
   created_at: string;
+}
+
+export interface PdfProfile {
+  tenant_id: number;
+  field_patterns: Record<string, string>;
+  updated_at: string;
+}
+
+export interface PdfProfilePreviewPage {
+  page: number;
+  raw_text: string;
+  fields: Record<string, string | null>;
+}
+
+export interface PdfImportJob {
+  id: number;
+  status: "pending" | "running" | "done" | "error";
+  total_pages: number;
+  processed_pages: number;
+  error: string | null;
+  import_batch_id: number | null;
 }
 
 export interface TenantCreate {
@@ -174,6 +246,18 @@ export function payInvoiceHelipagos(
   });
 }
 
+export function payInvoiceMacroclick(
+  slug: string,
+  invoiceId: number,
+  numeroSocio: string,
+  identificador: string,
+) {
+  return request<{ init_point: string }>(`/api/t/${slug}/invoices/${invoiceId}/pay-macroclick`, {
+    method: "POST",
+    body: JSON.stringify({ numero_socio: numeroSocio, identificador }),
+  });
+}
+
 export function adminLogin(slug: string, email: string, password: string) {
   return request<{ access_token: string }>(`/api/t/${slug}/admin/login`, {
     method: "POST",
@@ -213,6 +297,13 @@ export function setInvoicePagado(slug: string, token: string, invoiceId: number,
     method: "PATCH",
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ pagado }),
+  });
+}
+
+export function markOldestInvoicePaid(slug: string, token: string, memberId: number) {
+  return request<InvoiceOut>(`/api/t/${slug}/admin/members/${memberId}/mark-oldest-invoice-paid`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
   });
 }
 
@@ -298,6 +389,31 @@ export function disconnectHelipagos(slug: string, token: string) {
   });
 }
 
+export function getMacroclickStatus(slug: string, token: string) {
+  return request<MacroclickStatus>(`/api/t/${slug}/admin/macroclick/status`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function connectMacroclick(
+  slug: string,
+  token: string,
+  payload: { comercio_id: string; sucursal: string; secret_key: string; environment: "sandbox" | "production" },
+) {
+  return request<MacroclickStatus>(`/api/t/${slug}/admin/macroclick`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function disconnectMacroclick(slug: string, token: string) {
+  return request<MacroclickStatus>(`/api/t/${slug}/admin/macroclick`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
 export function getCurrentAdmin(slug: string, token: string) {
   return request<AdminUserOut>(`/api/t/${slug}/admin/me`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -345,6 +461,85 @@ export function resetAdminPassword(slug: string, token: string, adminId: number,
   });
 }
 
+export type GestorQrStatus = "pending" | "claimed" | "approved" | "denied" | "expired";
+
+export interface GestorQrStart {
+  code: string;
+  expires_at: string;
+}
+
+export interface GestorQrAdminStatus {
+  status: GestorQrStatus;
+  expires_at: string;
+}
+
+export function startGestorQr(slug: string, token: string) {
+  return request<GestorQrStart>(`/api/t/${slug}/admin/gestor-qr/start`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function getGestorQrStatus(slug: string, token: string, code: string) {
+  return request<GestorQrAdminStatus>(`/api/t/${slug}/admin/gestor-qr/${code}/status`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function approveGestorQr(slug: string, token: string, code: string) {
+  return request<GestorQrAdminStatus>(`/api/t/${slug}/admin/gestor-qr/${code}/approve`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function denyGestorQr(slug: string, token: string, code: string) {
+  return request<GestorQrAdminStatus>(`/api/t/${slug}/admin/gestor-qr/${code}/deny`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function listAdminMeters(slug: string, token: string) {
+  return request<AdminMeter[]>(`/api/t/${slug}/admin/meters`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function listCuts(slug: string, token: string) {
+  return request<ServiceCut[]>(`/api/t/${slug}/admin/cuts`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+// meterIds null = todos los medidores del socio que no tengan un corte vigente.
+export function orderCuts(
+  slug: string,
+  token: string,
+  memberId: number,
+  payload: { meter_ids: number[] | null; motivo: CutMotivo; detalle: string | null },
+) {
+  return request<ServiceCut[]>(`/api/t/${slug}/admin/members/${memberId}/cuts`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function cancelCut(slug: string, token: string, cutId: number) {
+  return request<ServiceCut>(`/api/t/${slug}/admin/cuts/${cutId}/cancel`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function orderCutRestore(slug: string, token: string, cutId: number) {
+  return request<ServiceCut>(`/api/t/${slug}/admin/cuts/${cutId}/order-restore`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
 export function getAuditLog(slug: string, token: string) {
   return request<AuditLogEntry[]>(`/api/t/${slug}/admin/audit-log`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -373,6 +568,36 @@ export async function importSpreadsheet(
     throw new ApiError(body.detail ?? "Ocurrió un error al importar");
   }
   return res.json() as Promise<ImportResult>;
+}
+
+export async function importPdf(
+  slug: string,
+  token: string,
+  files: File[],
+  periodYear: number,
+  periodMonth: number,
+) {
+  const form = new FormData();
+  for (const file of files) form.append("files", file);
+  form.append("period_year", String(periodYear));
+  form.append("period_month", String(periodMonth));
+
+  const res = await fetch(`${API_BASE}/api/t/${slug}/admin/import-pdf`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new ApiError(body.detail ?? "Ocurrió un error al importar");
+  }
+  return res.json() as Promise<PdfImportJob>;
+}
+
+export function getPdfImportStatus(slug: string, token: string, jobId: number) {
+  return request<PdfImportJob>(`/api/t/${slug}/admin/import-pdf/status/${jobId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
 }
 
 // -- Dev (plataforma) --------------------------------------------------
@@ -425,4 +650,40 @@ export function deleteTenantAdmin(devToken: string, slug: string, adminId: numbe
     method: "DELETE",
     headers: { Authorization: `Bearer ${devToken}` },
   });
+}
+
+export function getPdfProfile(devToken: string, slug: string) {
+  return request<PdfProfile | null>(`/api/dev/tenants/${slug}/pdf-profile`, {
+    headers: { Authorization: `Bearer ${devToken}` },
+  });
+}
+
+export function savePdfProfile(devToken: string, slug: string, fieldPatterns: Record<string, string>) {
+  return request<PdfProfile>(`/api/dev/tenants/${slug}/pdf-profile`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${devToken}` },
+    body: JSON.stringify({ field_patterns: fieldPatterns }),
+  });
+}
+
+export async function testPdfProfile(
+  devToken: string,
+  slug: string,
+  fieldPatterns: Record<string, string>,
+  file: File,
+) {
+  const form = new FormData();
+  form.append("field_patterns", JSON.stringify(fieldPatterns));
+  form.append("file", file);
+
+  const res = await fetch(`${API_BASE}/api/dev/tenants/${slug}/pdf-profile/test`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${devToken}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new ApiError(body.detail ?? "Ocurrió un error al probar el perfil");
+  }
+  return res.json() as Promise<PdfProfilePreviewPage[]>;
 }

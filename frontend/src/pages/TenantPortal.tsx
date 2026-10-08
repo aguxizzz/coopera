@@ -7,6 +7,7 @@ import {
   lookupMember,
   payInvoice,
   payInvoiceHelipagos,
+  payInvoiceMacroclick,
   type MemberAccount,
   type TenantPublic,
 } from "../lib/api";
@@ -76,6 +77,8 @@ export default function TenantPortal() {
   const [payError, setPayError] = useState<string | null>(null);
   const [payingHelipagos, setPayingHelipagos] = useState(false);
   const [payHelipagosError, setPayHelipagosError] = useState<string | null>(null);
+  const [payingMacroclick, setPayingMacroclick] = useState(false);
+  const [payMacroclickError, setPayMacroclickError] = useState<string | null>(null);
 
   useEffect(() => {
     getTenant(tenantSlug)
@@ -131,6 +134,24 @@ export default function TenantPortal() {
     } catch (err) {
       setPayHelipagosError(err instanceof ApiError ? err.message : "No se pudo iniciar el pago");
       setPayingHelipagos(false);
+    }
+  }
+
+  async function handlePayMacroclick() {
+    if (!account?.ultima_factura) return;
+    setPayingMacroclick(true);
+    setPayMacroclickError(null);
+    try {
+      const { init_point } = await payInvoiceMacroclick(
+        tenantSlug,
+        account.ultima_factura.id,
+        numeroSocio,
+        identificador,
+      );
+      window.location.href = init_point;
+    } catch (err) {
+      setPayMacroclickError(err instanceof ApiError ? err.message : "No se pudo iniciar el pago");
+      setPayingMacroclick(false);
     }
   }
 
@@ -298,6 +319,26 @@ export default function TenantPortal() {
                 : `Pagar ${money(account.ultima_factura.monto)}`}
             </button>
             {payHelipagosError && <p className="error">{payHelipagosError}</p>}
+          </div>
+        )}
+
+        {account.macroclick_connected && account.ultima_factura && !account.ultima_factura.pagado && (
+          <div className="card portal-pay-card">
+            <div className="pay-card-head">
+              <div>
+                <h3>Pagá tu boleta con Macro Click de Pago</h3>
+                <p className="muted">
+                  Pagá con tarjeta de crédito o débito a través de Banco Macro. (Integración no
+                  oficial.)
+                </p>
+              </div>
+            </div>
+            <button type="button" onClick={handlePayMacroclick} disabled={payingMacroclick}>
+              {payingMacroclick
+                ? "Redirigiendo a Macro Click de Pago..."
+                : `Pagar ${money(account.ultima_factura.monto)}`}
+            </button>
+            {payMacroclickError && <p className="error">{payMacroclickError}</p>}
           </div>
         )}
 

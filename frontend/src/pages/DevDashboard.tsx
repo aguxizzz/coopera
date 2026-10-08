@@ -5,14 +5,19 @@ import {
   createTenant,
   createTenantAdmin,
   deleteTenantAdmin,
+  getPdfProfile,
   listTenantAdmins,
   listTenants,
   resetTenantAdminPassword,
+  savePdfProfile,
+  testPdfProfile,
   type AdminUserOut,
+  type PdfProfilePreviewPage,
   type TenantSummary,
 } from "../lib/api";
 import Drawer from "../components/Drawer";
 import ConfirmDialog from "../components/ConfirmDialog";
+import FilePicker from "../components/FilePicker";
 
 const NEW_TENANT_INITIAL = {
   slug: "",
@@ -47,6 +52,18 @@ export default function DevDashboard() {
 
   const [confirmDelete, setConfirmDelete] = useState<AdminUserOut | null>(null);
   const [deletingAdmin, setDeletingAdmin] = useState(false);
+
+  const [pdfSlug, setPdfSlug] = useState<string | null>(null);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+  const [pdfFields, setPdfFields] = useState<{ field: string; pattern: string }[]>([
+    { field: "numero_socio", pattern: "" },
+  ]);
+  const [pdfSampleFile, setPdfSampleFile] = useState<File | null>(null);
+  const [pdfTesting, setPdfTesting] = useState(false);
+  const [pdfPreview, setPdfPreview] = useState<PdfProfilePreviewPage[] | null>(null);
+  const [pdfSaving, setPdfSaving] = useState(false);
+  const [pdfSaved, setPdfSaved] = useState(false);
 
   const refresh = useCallback(() => {
     if (!token) return;
@@ -139,6 +156,77 @@ export default function DevDashboard() {
     }
   }
 
+  function openPdfProfile(slug: string) {
+    setPdfSlug(slug);
+    setPdfError(null);
+    setPdfPreview(null);
+    setPdfSampleFile(null);
+    setPdfSaved(false);
+    setPdfLoading(true);
+    getPdfProfile(token!, slug)
+      .then((profile) => {
+        const entries = profile ? Object.entries(profile.field_patterns) : [];
+        setPdfFields(
+          entries.length > 0
+            ? entries.map(([field, pattern]) => ({ field, pattern }))
+            : [{ field: "numero_socio", pattern: "" }],
+        );
+      })
+      .catch((err) => setPdfError(err instanceof ApiError ? err.message : "No se pudo cargar el perfil"))
+      .finally(() => setPdfLoading(false));
+  }
+
+  function fieldPatternsObject() {
+    const obj: Record<string, string> = {};
+    for (const { field, pattern } of pdfFields) {
+      if (field.trim()) obj[field.trim()] = pattern;
+    }
+    return obj;
+  }
+
+  function updatePdfField(index: number, key: "field" | "pattern", value: string) {
+    setPdfFields((prev) => prev.map((row, i) => (i === index ? { ...row, [key]: value } : row)));
+  }
+
+  function addPdfFieldRow() {
+    setPdfFields((prev) => [...prev, { field: "", pattern: "" }]);
+  }
+
+  function removePdfFieldRow(index: number) {
+    setPdfFields((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  async function handleTestPdfProfile(e: FormEvent) {
+    e.preventDefault();
+    if (!pdfSlug || !pdfSampleFile) return;
+    setPdfTesting(true);
+    setPdfError(null);
+    setPdfPreview(null);
+    try {
+      const pages = await testPdfProfile(token!, pdfSlug, fieldPatternsObject(), pdfSampleFile);
+      setPdfPreview(pages);
+    } catch (err) {
+      setPdfError(err instanceof ApiError ? err.message : "No se pudo probar el perfil");
+    } finally {
+      setPdfTesting(false);
+    }
+  }
+
+  async function handleSavePdfProfile() {
+    if (!pdfSlug) return;
+    setPdfSaving(true);
+    setPdfError(null);
+    setPdfSaved(false);
+    try {
+      await savePdfProfile(token!, pdfSlug, fieldPatternsObject());
+      setPdfSaved(true);
+    } catch (err) {
+      setPdfError(err instanceof ApiError ? err.message : "No se pudo guardar el perfil");
+    } finally {
+      setPdfSaving(false);
+    }
+  }
+
   function openTenantPanel(slug: string) {
     sessionStorage.setItem(`coopera_token_${slug}`, token!);
     navigate(`/${slug}/admin/dashboard`);
@@ -227,6 +315,9 @@ export default function DevDashboard() {
                   <button type="button" onClick={() => openAdmins(t.slug)}>
                     Admins
                   </button>
+                  <button type="button" className="btn-secondary" onClick={() => openPdfProfile(t.slug)}>
+                    Perfil PDF
+                  </button>
                   <button type="button" className="btn-secondary" onClick={() => openTenantPanel(t.slug)}>
                     Abrir panel
                   </button>
@@ -297,6 +388,92 @@ export default function DevDashboard() {
               Cancelar
             </button>
           </form>
+        )}
+      </Drawer>
+
+      <Drawer open={pdfSlug !== null} onClose={() => setPdfSlug(null)} title={`Perfil de importación PDF — ${pdfSlug}`}>
+        {pdfLoading && <p className="muted small">Cargando...</p>}
+        {pdfError && <p className="error">{pdfError}</p>}
+
+        {!pdfLoading && (
+          <>
+            <p className="muted small">
+              Un patrón por campo (regex con un grupo de captura). Cada página del PDF es un socio; se usa el{" "}
+              <strong>último</strong> match de cada patrón en la página. <code>numero_socio</code> es obligatorio.
+            </p>
+
+            <div className="invoice-list">
+              {pdfFields.map((row, i) => (
+                <div className="invoice-item-row" key={i} style={{ gap: "var(--space-2)" }}>
+                  <input
+                    placeholder="campo (ej. consumo)"
+                    value={row.field}
+                    onChange={(e) => updatePdfField(i, "field", e.target.value)}
+                    style={{ flex: "0 0 40%" }}
+                  />
+                  <input
+                    placeholder="regex con (grupo)"
+                    value={row.pattern}
+                    onChange={(e) => updatePdfField(i, "pattern", e.target.value)}
+                    style={{ flex: 1 }}
+                  />
+                  <button type="button" className="btn-ghost" onClick={() => removePdfFieldRow(i)}>
+                    Quitar
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button type="button" className="btn-secondary" onClick={addPdfFieldRow} style={{ marginTop: "var(--space-2)" }}>
+              Agregar campo
+            </button>
+
+            <form className="lookup-form" onSubmit={handleTestPdfProfile} style={{ marginTop: "var(--space-4)" }}>
+              <h3>Probar con un PDF de muestra</h3>
+              <div className="file-field">
+                <span>PDF de muestra</span>
+                <FilePicker id="pdf-sample-file" file={pdfSampleFile} onChange={setPdfSampleFile} accept=".pdf" required />
+              </div>
+              <button type="submit" disabled={pdfTesting || !pdfSampleFile}>
+                {pdfTesting ? "Probando..." : "Probar"}
+              </button>
+            </form>
+
+            {pdfPreview && (
+              <div className="invoice-list" style={{ marginTop: "var(--space-4)" }}>
+                <h3>Resultado ({pdfPreview.length} páginas)</h3>
+                {pdfPreview.map((p) => (
+                  <div className="invoice-item" key={p.page}>
+                    <div className="invoice-item-row">
+                      <strong>Página {p.page}</strong>
+                    </div>
+                    <ul className="audit-log-list">
+                      {Object.entries(p.fields).map(([field, value]) => (
+                        <li key={field}>
+                          <code>{field}</code>: {value ?? <span className="muted">(sin match)</span>}
+                        </li>
+                      ))}
+                    </ul>
+                    <details>
+                      <summary className="muted small">Texto crudo</summary>
+                      <pre className="small" style={{ whiteSpace: "pre-wrap" }}>
+                        {p.raw_text}
+                      </pre>
+                    </details>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleSavePdfProfile}
+              disabled={pdfSaving}
+              style={{ marginTop: "var(--space-4)" }}
+            >
+              {pdfSaving ? "Guardando..." : "Guardar perfil"}
+            </button>
+            {pdfSaved && <p className="success">Perfil guardado.</p>}
+          </>
         )}
       </Drawer>
 

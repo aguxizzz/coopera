@@ -16,8 +16,6 @@ export default function AdminLogin() {
     getTenant(tenantSlug).then(setTenant).catch(() => setTenant(null));
   }, [tenantSlug]);
 
-  const accent = tenant?.primary_color ?? "#2f5fe0";
-
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
@@ -34,7 +32,7 @@ export default function AdminLogin() {
   }
 
   return (
-    <div className="tenant-search-view" style={{ ["--accent" as string]: accent }}>
+    <div className="tenant-search-view admin-ink">
       <div className="login-card">
         <header className="tenant-header-centered">
           <LogoPlaceholder className="tenant-logo-centered" src={tenant?.logo_primary_url} alt={tenant?.name} />
