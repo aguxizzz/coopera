@@ -26,7 +26,6 @@ export interface TenantPublic {
   contact_whatsapp: string | null;
   contact_address: string | null;
   logo_primary_url: string | null;
-  logo_secondary_url: string | null;
 }
 
 export type TenantSettings = TenantPublic;
@@ -321,7 +320,7 @@ export function updateAdminSettings(slug: string, token: string, payload: Tenant
   });
 }
 
-export async function uploadLogo(slug: string, token: string, kind: "primary" | "secondary", file: File) {
+export async function uploadLogo(slug: string, token: string, kind: "primary", file: File) {
   const form = new FormData();
   form.append("kind", kind);
   form.append("file", file);
@@ -338,7 +337,7 @@ export async function uploadLogo(slug: string, token: string, kind: "primary" | 
   return res.json() as Promise<TenantSettings>;
 }
 
-export function deleteLogo(slug: string, token: string, kind: "primary" | "secondary") {
+export function deleteLogo(slug: string, token: string, kind: "primary") {
   return request<TenantSettings>(`/api/t/${slug}/admin/logo?kind=${kind}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${token}` },

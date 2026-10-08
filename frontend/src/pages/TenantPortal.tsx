@@ -445,9 +445,6 @@ export default function TenantPortal() {
         )}
 
         <footer className="tenant-footer tenant-footer-centered">
-          {tenant?.logo_secondary_url && (
-            <img className="tenant-footer-secondary-logo" src={tenant.logo_secondary_url} alt="" />
-          )}
           <Link to={`/${tenantSlug}/admin`}>Acceso para la cooperativa</Link>
         </footer>
       </div>

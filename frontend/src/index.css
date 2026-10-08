@@ -1268,17 +1268,11 @@ input[type="checkbox"] {
   object-fit: contain;
 }
 
-.tenant-footer-secondary-logo {
-  height: 28px;
-  width: auto;
-  object-fit: contain;
-}
-
 /* ---------- Configuración (panel admin) ---------- */
 
 .settings-logos {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
   margin: var(--space-4) 0;
 }

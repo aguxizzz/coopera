@@ -35,7 +35,6 @@ class Tenant(Base):
     contact_whatsapp: Mapped[str | None] = mapped_column(String(64), nullable=True)
     contact_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
     logo_primary_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    logo_secondary_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # Shared "household" password for the gestor mobile app: one password per
     # cooperativa (set by an admin), not one per gestor. Null until an admin

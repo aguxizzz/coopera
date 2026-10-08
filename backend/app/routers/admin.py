@@ -381,8 +381,8 @@ async def upload_tenant_logo(
     db: Session = Depends(get_db),
     _admin: AdminUser = Depends(get_current_admin),
 ):
-    if kind not in ("primary", "secondary"):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "kind debe ser 'primary' o 'secondary'")
+    if kind != "primary":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "kind debe ser 'primary'")
 
     tenant = get_tenant(tenant_slug, db)
     content = await file.read()
@@ -393,11 +393,8 @@ async def upload_tenant_logo(
     except UnsupportedLogoType as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
 
-    old_url = tenant.logo_primary_url if kind == "primary" else tenant.logo_secondary_url
-    if kind == "primary":
-        tenant.logo_primary_url = url
-    else:
-        tenant.logo_secondary_url = url
+    old_url = tenant.logo_primary_url
+    tenant.logo_primary_url = url
     db.commit()
     db.refresh(tenant)
 
@@ -531,15 +528,12 @@ def delete_tenant_logo(
     db: Session = Depends(get_db),
     _admin: AdminUser = Depends(get_current_admin),
 ):
-    if kind not in ("primary", "secondary"):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "kind debe ser 'primary' o 'secondary'")
+    if kind != "primary":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "kind debe ser 'primary'")
 
     tenant = get_tenant(tenant_slug, db)
-    old_url = tenant.logo_primary_url if kind == "primary" else tenant.logo_secondary_url
-    if kind == "primary":
-        tenant.logo_primary_url = None
-    else:
-        tenant.logo_secondary_url = None
+    old_url = tenant.logo_primary_url
+    tenant.logo_primary_url = None
     db.commit()
     db.refresh(tenant)
 

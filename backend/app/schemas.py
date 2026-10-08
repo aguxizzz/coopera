@@ -13,7 +13,6 @@ class TenantPublic(BaseModel):
     contact_whatsapp: str | None
     contact_address: str | None
     logo_primary_url: str | None
-    logo_secondary_url: str | None
 
     model_config = ConfigDict(from_attributes=True)
 

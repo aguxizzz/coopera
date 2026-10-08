@@ -317,7 +317,7 @@ export default function AdminDashboard() {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [settingsSaved, setSettingsSaved] = useState(false);
-  const [logoUploading, setLogoUploading] = useState<"primary" | "secondary" | null>(null);
+  const [logoUploading, setLogoUploading] = useState<"primary" | null>(null);
   const [logoError, setLogoError] = useState<string | null>(null);
 
   const [searchParams, setSearchParams] = useSearchParams();
@@ -605,7 +605,7 @@ export default function AdminDashboard() {
     }
   }
 
-  async function handleLogoChange(kind: "primary" | "secondary", file: File | null) {
+  async function handleLogoChange(kind: "primary", file: File | null) {
     if (!token || !file) return;
     setLogoUploading(kind);
     setLogoError(null);
@@ -619,7 +619,7 @@ export default function AdminDashboard() {
     }
   }
 
-  async function handleLogoRemove(kind: "primary" | "secondary") {
+  async function handleLogoRemove(kind: "primary") {
     if (!token) return;
     setLogoUploading(kind);
     setLogoError(null);
@@ -984,7 +984,7 @@ export default function AdminDashboard() {
           <h2>Identidad</h2>
         </div>
         <p className="muted small">
-          Logos y color destacado que se muestran en el portal de socios.
+          Logo y color destacado que se muestran en el portal de socios.
         </p>
         </div>
         <div className="settings-section-body">
@@ -1008,33 +1008,6 @@ export default function AdminDashboard() {
                       className="btn-danger"
                       disabled={logoUploading === "primary"}
                       onClick={() => handleLogoRemove("primary")}
-                    >
-                      Eliminar
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-          <div className="settings-logo-field">
-            <div className="settings-logo-row">
-              <LogoPlaceholder className="settings-logo-preview" src={settings?.logo_secondary_url} />
-              <div className="settings-logo-info">
-                <span className="settings-logo-label">Logo secundario</span>
-                <div className="settings-logo-actions">
-                  <FilePicker
-                    id="logo-secondary"
-                    file={null}
-                    onChange={(f) => handleLogoChange("secondary", f)}
-                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                    buttonLabel={logoUploading === "secondary" ? "Subiendo..." : "Subir imagen"}
-                  />
-                  {settings?.logo_secondary_url && (
-                    <button
-                      type="button"
-                      className="btn-danger"
-                      disabled={logoUploading === "secondary"}
-                      onClick={() => handleLogoRemove("secondary")}
                     >
                       Eliminar
                     </button>
