@@ -21,6 +21,7 @@ TENANTS = [
         "mp_cbu": "0000003100098765432109",
         "mp_titular": "Cooperativa de Servicios Valle Verde Ltda.",
         "primary_color": "#16a34a",
+        "servicios_medidos": ["luz"],
         "admin_email": "admin@valleverde.coop",
         # (numero_socio, nombre, dni, email, consumo, monto)
         "members": [
@@ -87,6 +88,9 @@ def seed_tenant(db, t, today=None):
         )
         db.add(tenant)
         db.flush()
+
+    if not tenant.servicios_medidos:
+        tenant.servicios_medidos = list(t.get("servicios_medidos", []))
 
     if tenant.gestor_shared_password_hash is None:
         tenant.gestor_shared_password_hash = hash_password("gestor123")

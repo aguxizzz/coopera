@@ -13,12 +13,16 @@ class TenantPublic(BaseModel):
     contact_whatsapp: str | None
     contact_address: str | None
     logo_primary_url: str | None
+    portal_socios_enabled: bool = True
 
     model_config = ConfigDict(from_attributes=True)
 
 
+ServicioMedido = Literal["luz", "agua", "gas"]
+
+
 class TenantSettingsOut(TenantPublic):
-    pass
+    servicios_medidos: list[ServicioMedido] = []
 
 
 class TenantSettingsUpdate(BaseModel):
@@ -234,7 +238,17 @@ class TenantSummary(BaseModel):
     name: str
     admin_count: int
     member_count: int
+    portal_socios_enabled: bool = True
+    servicios_medidos: list[ServicioMedido] = []
     created_at: dt.datetime
+
+
+class TenantModulesUpdate(BaseModel):
+    portal_socios_enabled: bool
+
+
+class TenantServicesUpdate(BaseModel):
+    servicios_medidos: list[ServicioMedido]
 
 
 class TenantCreate(BaseModel):
@@ -246,6 +260,7 @@ class TenantCreate(BaseModel):
     mp_cbu: str | None = None
     mp_titular: str | None = None
     primary_color: str = "#2563eb"
+    servicios_medidos: list[ServicioMedido] = []
 
 
 class AdminUserOut(BaseModel):
@@ -308,6 +323,13 @@ class MeterOut(BaseModel):
     ultima_lectura_fecha: dt.datetime | None
     ultima_lectura_anomala: bool = False
     ultima_lectura_id: int | None = None
+    lectura_inicial: float | None = None
+    # Segundo medidor del mismo servicio para el socio (otra propiedad).
+    adicional: bool = False
+    # Un gestor informó que el socio no usa este servicio; con `activo` en
+    # true todavía espera que la oficina lo dé de baja o descarte el aviso.
+    sin_uso_reportado_at: dt.datetime | None = None
+    sin_uso_reportado_por: str | None = None
     # Estado del corte vigente del medidor (ordenado | ejecutado |
     # reposicion_ordenada), o null si no tiene ninguno.
     corte_estado: str | None = None
@@ -315,11 +337,38 @@ class MeterOut(BaseModel):
 
 
 class MeterCreate(BaseModel):
-    member_id: int
-    codigo: str
+    # El socio va por id o por número. Con número, si todavía no existe se
+    # crea con `nombre` (una conexión nueva suele ser de un socio nuevo).
+    member_id: int | None = None
+    numero_socio: str | None = Field(None, max_length=64)
+    nombre: str | None = Field(None, max_length=255)
+    codigo: str = Field(min_length=1, max_length=64)
     tipo: Literal["luz", "agua", "gas"] = "luz"
-    direccion: str | None = None
-    unidad: str = "kWh"
+    direccion: str | None = Field(None, max_length=255)
+    unidad: str | None = Field(None, max_length=16)
+    lectura_inicial: float | None = Field(None, ge=0)
+    # Excepción a "un medidor por servicio": el socio ya tiene uno de este
+    # servicio y este es de otra propiedad.
+    adicional: bool = False
+
+
+class MeterSinUsoResolve(BaseModel):
+    # true = dar de baja el medidor; false = descartar el aviso del gestor.
+    baja: bool
+
+
+class MeterImportResult(BaseModel):
+    rows_processed: int
+    meters_created: int
+    meters_updated: int
+    members_created: int
+    errors: list[str]
+
+
+class ReadingsExportSummary(BaseModel):
+    total: int
+    leidos: int
+    sin_leer: int
 
 
 class ReadingCreate(BaseModel):

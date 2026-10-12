@@ -27,12 +27,15 @@ from app.schemas import (
     PdfProfilePreviewPage,
     PlatformLogin,
     TenantCreate,
+    TenantModulesUpdate,
+    TenantServicesUpdate,
     TenantSettingsOut,
     TenantSummary,
     TokenResponse,
 )
 from app.services.audit import log_action
 from app.services.pdf_importer import PdfProfileError, preview_profile
+from app.services.service_meters import ensure_all_service_meters
 
 router = APIRouter(prefix="/api/dev", tags=["dev"])
 
@@ -64,6 +67,8 @@ def list_tenants(
                 name=t.name,
                 admin_count=admin_count or 0,
                 member_count=member_count or 0,
+                portal_socios_enabled=t.portal_socios_enabled,
+                servicios_medidos=t.servicios_medidos or [],
                 created_at=t.created_at,
             )
         )
@@ -86,6 +91,7 @@ def create_tenant(
         mp_cbu=payload.mp_cbu,
         mp_titular=payload.mp_titular,
         primary_color=payload.primary_color,
+        servicios_medidos=list(dict.fromkeys(payload.servicios_medidos)),
     )
     db.add(tenant)
     db.flush()
@@ -112,6 +118,52 @@ def get_tenant_detail(
     tenant = db.query(Tenant).filter(Tenant.slug == tenant_slug).first()
     if tenant is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Cooperativa no encontrada")
+    return tenant
+
+
+@router.patch("/tenants/{tenant_slug}/modules", response_model=TenantSettingsOut)
+def update_tenant_modules(
+    tenant_slug: str,
+    payload: TenantModulesUpdate,
+    db: Session = Depends(get_db),
+    platform_user: PlatformUser = Depends(get_current_platform_user),
+):
+    """Turns the socio portal on or off for a cooperativa that only wants the
+    gestor app and the panel."""
+    tenant = db.query(Tenant).filter(Tenant.slug == tenant_slug).first()
+    if tenant is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Cooperativa no encontrada")
+    tenant.portal_socios_enabled = payload.portal_socios_enabled
+    db.commit()
+    db.refresh(tenant)
+    log_action(
+        db, tenant, platform_user, "modules.updated",
+        details=f"portal_socios_enabled={tenant.portal_socios_enabled}", actor_type="platform",
+    )
+    return tenant
+
+
+@router.patch("/tenants/{tenant_slug}/services", response_model=TenantSettingsOut)
+def update_tenant_services(
+    tenant_slug: str,
+    payload: TenantServicesUpdate,
+    db: Session = Depends(get_db),
+    platform_user: PlatformUser = Depends(get_current_platform_user),
+):
+    """Declares which services the cooperativa measures and gives every
+    existing socio the meters they're missing for them. Dropping a service
+    never deletes meters: they keep their readings."""
+    tenant = db.query(Tenant).filter(Tenant.slug == tenant_slug).first()
+    if tenant is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Cooperativa no encontrada")
+    tenant.servicios_medidos = list(dict.fromkeys(payload.servicios_medidos))
+    created = ensure_all_service_meters(db, tenant)
+    db.commit()
+    db.refresh(tenant)
+    log_action(
+        db, tenant, platform_user, "services.updated",
+        details=f"servicios_medidos={tenant.servicios_medidos}, medidores_creados={created}", actor_type="platform",
+    )
     return tenant
 
 

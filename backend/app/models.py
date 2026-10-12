@@ -6,10 +6,14 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     JSON,
     Numeric,
     String,
     UniqueConstraint,
+    false,
+    text,
+    true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -35,6 +39,19 @@ class Tenant(Base):
     contact_whatsapp: Mapped[str | None] = mapped_column(String(64), nullable=True)
     contact_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
     logo_primary_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    # Módulos contratados. Una cooperativa puede usar sólo la app de gestores
+    # y el panel, sin el portal donde el socio consulta su saldo: con esto en
+    # False, /{slug} y los endpoints públicos del socio dejan de responder.
+    # Lo cambia el equipo de Coopera desde /api/dev, no el admin del tenant.
+    portal_socios_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+
+    # Servicios que la cooperativa mide con medidor (luz | agua | gas). Cada
+    # socio tiene un medidor por cada uno; los que falten se crean solos al
+    # importar socios (ver app/services/service_meters.py). Vacío = no se
+    # crea ninguno automáticamente. También lo define el equipo de Coopera
+    # desde /api/dev.
+    servicios_medidos: Mapped[list[str]] = mapped_column(JSON, default=list, server_default=text("'[]'"))
 
     # Shared "household" password for the gestor mobile app: one password per
     # cooperativa (set by an admin), not one per gestor. Null until an admin
@@ -308,11 +325,22 @@ class GestorQrSession(Base):
 
 
 class Meter(Base):
-    """A medidor (luz, agua o gas) asociado a un socio. Un socio puede tener
-    más de uno (ej: varias propiedades)."""
+    """A medidor (luz, agua o gas) asociado a un socio. Un socio tiene uno
+    por servicio (`tipo`); un segundo del mismo servicio (otra propiedad)
+    sólo entra como excepción explícita, marcado `adicional`."""
 
     __tablename__ = "meters"
-    __table_args__ = (UniqueConstraint("tenant_id", "codigo", name="uq_meter_tenant_codigo"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "codigo", name="uq_meter_tenant_codigo"),
+        Index(
+            "uq_meter_member_tipo_principal",
+            "member_id",
+            "tipo",
+            unique=True,
+            sqlite_where=text("NOT adicional"),
+            postgresql_where=text("NOT adicional"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
@@ -322,9 +350,24 @@ class Meter(Base):
     direccion: Mapped[str | None] = mapped_column(String(255), nullable=True)
     unidad: Mapped[str] = mapped_column(String(16), default="kWh")
     activo: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Valor del medidor al cargarlo en el padrón. No es una lectura (no cuenta
+    # como "leído este mes" ni sale en la exportación): sólo es contra qué se
+    # calcula el consumo de la primera lectura del gestor.
+    lectura_inicial: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Segundo medidor (o tercero...) del mismo servicio para el mismo socio.
+    # Nunca se crea solo: lo carga la oficina a propósito, desde el padrón o
+    # el alta manual.
+    adicional: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # Un gestor informó en la recorrida que el socio no usa este servicio
+    # (típico de un medidor creado solo, con código provisorio). Queda a
+    # confirmar por la oficina, que lo da de baja (`activo` = False) o
+    # descarta el aviso; una lectura posterior también lo descarta.
+    sin_uso_reportado_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    sin_uso_reportado_por_id: Mapped[int | None] = mapped_column(ForeignKey("gestores.id"), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     member: Mapped[Member] = relationship(back_populates="meters")
+    sin_uso_reportado_por: Mapped[Gestor | None] = relationship()
     readings: Mapped[list["Reading"]] = relationship(back_populates="meter", cascade="all, delete-orphan")
 
 

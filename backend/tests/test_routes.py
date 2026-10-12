@@ -4,13 +4,15 @@ import pytest
 
 from app.auth import create_gestor_access_token
 from app.models import Gestor, Meter, Reading
+from tests.conftest import new_member
 
 
 @pytest.fixture()
 def meters(db_session, tenant, member):
     out = []
     for i, (cod, direc) in enumerate([("M-1", "Calle B 20"), ("M-2", "Calle A 10"), ("M-3", "Calle C 30")]):
-        m = Meter(tenant_id=tenant.id, member_id=member.id, codigo=cod, tipo="luz", direccion=direc)
+        socio = member if i == 0 else new_member(db_session, tenant, f"M{i}")
+        m = Meter(tenant_id=tenant.id, member_id=socio.id, codigo=cod, tipo="luz", direccion=direc)
         db_session.add(m)
         out.append(m)
     db_session.commit()
@@ -211,7 +213,8 @@ def _jornada(db_session, tenant, gestor, meters_in_order, start, minutes=10):
 def many_meters(db_session, tenant, member):
     out = []
     for i in range(12):
-        m = Meter(tenant_id=tenant.id, member_id=member.id, codigo=f"N-{i:02d}", tipo="luz", direccion=f"Calle {i:02d}")
+        socio = new_member(db_session, tenant, f"N{i:02d}")
+        m = Meter(tenant_id=tenant.id, member_id=socio.id, codigo=f"N-{i:02d}", tipo="luz", direccion=f"Calle {i:02d}")
         db_session.add(m)
         out.append(m)
     db_session.commit()
@@ -374,7 +377,8 @@ def _count_queries(db_session, fn):
 def _add_meters(db_session, tenant, member, count, start=0):
     out = []
     for i in range(start, start + count):
-        m = Meter(tenant_id=tenant.id, member_id=member.id, codigo=f"Q-{i:03d}", tipo="luz", direccion=f"Calle {i}")
+        socio = new_member(db_session, tenant, f"Q{i:03d}")
+        m = Meter(tenant_id=tenant.id, member_id=socio.id, codigo=f"Q-{i:03d}", tipo="luz", direccion=f"Calle {i}")
         db_session.add(m)
         out.append(m)
     db_session.commit()
@@ -527,3 +531,54 @@ def test_stop_reading_carries_the_gestor_observacion(client, tenant, admin_heade
     assert resp.status_code == 200
     assert resp.json()["reading"]["observacion"] == "Uso estacional"
     assert resp.json()["reading"]["anomala"] is True
+
+
+def test_skip_because_socio_does_not_use_the_service_goes_to_the_office(
+    client, tenant, admin_headers, gestor_headers, gestor, meters
+):
+    route = _make_route(client, tenant, admin_headers, meters).json()
+    g = f"{_base(tenant)}/gestor"
+    admin_meters = f"{_base(tenant)}/admin/meters"
+    run = client.post(f"{g}/routes/{route['id']}/start", headers=gestor_headers).json()
+    s0, s1, s2 = run["paradas"]
+
+    def skip(stop, motivo):
+        return client.post(f"{g}/runs/{run['id']}/stops/{stop['id']}/skip", json={"motivo": motivo}, headers=gestor_headers)
+
+    def reported():
+        rows = client.get(admin_meters, headers=admin_headers).json()
+        return {m["codigo"]: m["sin_uso_reportado_por"] for m in rows if m["sin_uso_reportado_at"] and m["activo"]}
+
+    skip(s0, "Nadie en casa")
+    skip(s1, "El socio no usa este servicio")
+    skip(s2, "El socio no usa este servicio")
+    # El aviso no da de baja nada: el medidor sigue en la app hasta que la oficina decida.
+    assert reported() == {"M-2": gestor.nombre, "M-3": gestor.nombre}
+    assert len(client.get(f"{g}/meters", headers=gestor_headers).json()) == 3
+
+    # Sin aviso pendiente no hay nada que resolver.
+    assert client.post(f"{admin_meters}/{s0['meter_id']}/sin-uso", json={"baja": True}, headers=admin_headers).status_code == 409
+
+    baja = client.post(f"{admin_meters}/{s1['meter_id']}/sin-uso", json={"baja": True}, headers=admin_headers)
+    assert baja.status_code == 200
+    assert baja.json()["activo"] is False
+    descartado = client.post(f"{admin_meters}/{s2['meter_id']}/sin-uso", json={"baja": False}, headers=admin_headers)
+    assert (descartado.json()["activo"], descartado.json()["sin_uso_reportado_at"]) == (True, None)
+
+    assert reported() == {}
+    assert [m["codigo"] for m in client.get(f"{g}/meters", headers=gestor_headers).json()] == ["M-1", "M-3"]
+
+
+def test_reading_a_meter_drops_the_no_use_report(client, tenant, admin_headers, gestor_headers, meters, db_session):
+    route = _make_route(client, tenant, admin_headers, meters[:2]).json()
+    g = f"{_base(tenant)}/gestor"
+    run = client.post(f"{g}/routes/{route['id']}/start", headers=gestor_headers).json()
+    stop = run["paradas"][0]
+    client.post(f"{g}/runs/{run['id']}/stops/{stop['id']}/skip", json={"motivo": "El socio no usa este servicio"}, headers=gestor_headers)
+    assert db_session.get(Meter, stop["meter_id"]).sin_uso_reportado_at is not None
+
+    read = client.post(f"{g}/runs/{run['id']}/stops/{stop['id']}/reading", data={"valor": "5"}, headers=gestor_headers)
+    assert read.status_code == 200
+
+    db_session.expire_all()
+    assert db_session.get(Meter, stop["meter_id"]).sin_uso_reportado_at is None

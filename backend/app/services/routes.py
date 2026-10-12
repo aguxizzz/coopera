@@ -385,7 +385,7 @@ def _stop_out(stop: RouteRunStop, last: Reading | None, own: Reading | None) -> 
         unidad=m.unidad,
         numero_socio=m.member.numero_socio,
         nombre_socio=m.member.nombre,
-        ultima_lectura=last.valor if last else None,
+        ultima_lectura=last.valor if last else m.lectura_inicial,
         ultima_lectura_fecha=last.created_at if last else None,
         ultima_lectura_id=last.id if last else None,
         reading_id=stop.reading_id,

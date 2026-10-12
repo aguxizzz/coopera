@@ -26,9 +26,16 @@ export interface TenantPublic {
   contact_whatsapp: string | null;
   contact_address: string | null;
   logo_primary_url: string | null;
+  // False when the cooperativa only uses the gestor app and the panel.
+  portal_socios_enabled: boolean;
 }
 
-export type TenantSettings = TenantPublic;
+export type ServicioMedido = "luz" | "agua" | "gas";
+
+export interface TenantSettings extends TenantPublic {
+  // Servicios que la cooperativa mide: cada socio tiene un medidor de cada uno.
+  servicios_medidos: ServicioMedido[];
+}
 
 export interface TenantSettingsUpdate {
   contact_email?: string | null;
@@ -118,6 +125,14 @@ export interface AdminMeter {
   direccion: string | null;
   activo: boolean;
   member_id: number;
+  numero_socio: string;
+  nombre_socio: string;
+  // Segundo medidor del mismo servicio para el socio (otra propiedad).
+  adicional: boolean;
+  // Un gestor informó que el socio no usa el servicio. Con `activo` en true
+  // el aviso sigue pendiente de que la oficina lo resuelva.
+  sin_uso_reportado_at: string | null;
+  sin_uso_reportado_por: string | null;
   corte_estado: CutEstado | null;
   corte_id: number | null;
 }
@@ -164,6 +179,8 @@ export interface TenantSummary {
   name: string;
   admin_count: number;
   member_count: number;
+  portal_socios_enabled: boolean;
+  servicios_medidos: ServicioMedido[];
   created_at: string;
 }
 
@@ -197,6 +214,7 @@ export interface TenantCreate {
   mp_cbu?: string | null;
   mp_titular?: string | null;
   primary_color?: string;
+  servicios_medidos?: ServicioMedido[];
 }
 
 export interface AdminUserOut {
@@ -505,6 +523,98 @@ export function listAdminMeters(slug: string, token: string) {
   });
 }
 
+export interface AdminMeterInput {
+  numero_socio: string;
+  nombre: string | null;
+  codigo: string;
+  tipo: AdminMeter["tipo"];
+  direccion: string | null;
+  lectura_inicial: number | null;
+  // El socio ya tiene un medidor de ese servicio y este es de otra propiedad.
+  adicional: boolean;
+}
+
+// Alta de un medidor suelto. Si el socio todavía no existe se crea con `nombre`.
+export function createAdminMeter(slug: string, token: string, input: AdminMeterInput) {
+  return request<AdminMeter>(`/api/t/${slug}/admin/meters`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(input),
+  });
+}
+
+// Cierra el aviso "el socio no usa este servicio": baja del medidor, o
+// descartar el aviso y que siga como estaba.
+export function resolveMeterSinUso(slug: string, token: string, meterId: number, baja: boolean) {
+  return request<AdminMeter>(`/api/t/${slug}/admin/meters/${meterId}/sin-uso`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ baja }),
+  });
+}
+
+export interface MeterImportResult {
+  rows_processed: number;
+  meters_created: number;
+  meters_updated: number;
+  members_created: number;
+  errors: string[];
+}
+
+// Padrón de medidores (una fila por medidor). Opcional, y se puede volver a subir.
+export async function importMeters(slug: string, token: string, file: File) {
+  const form = new FormData();
+  form.append("file", file);
+
+  const res = await fetch(`${API_BASE}/api/t/${slug}/admin/meters/import`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new ApiError(body.detail ?? "Ocurrió un error al importar");
+  }
+  return res.json() as Promise<MeterImportResult>;
+}
+
+export interface ReadingsExportSummary {
+  total: number;
+  leidos: number;
+  sin_leer: number;
+}
+
+// How many meters have a reading that month, to tell whether the planilla is
+// complete before downloading it.
+export function getReadingsExportSummary(slug: string, token: string, year: number, month: number) {
+  return request<ReadingsExportSummary>(
+    `/api/t/${slug}/admin/readings/export/summary?year=${year}&month=${month}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+}
+
+export type ReadingsExportFormat = "xlsx" | "csv";
+
+// The month's readings (one row per meter) as a file, for the cooperativa's
+// own billing system.
+export async function exportReadings(
+  slug: string,
+  token: string,
+  year: number,
+  month: number,
+  formato: ReadingsExportFormat,
+) {
+  const res = await fetch(
+    `${API_BASE}/api/t/${slug}/admin/readings/export?year=${year}&month=${month}&formato=${formato}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new ApiError(body.detail ?? "No se pudo descargar la planilla");
+  }
+  return res.blob();
+}
+
 export function listCuts(slug: string, token: string) {
   return request<ServiceCut[]>(`/api/t/${slug}/admin/cuts`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -619,6 +729,22 @@ export function createTenant(devToken: string, payload: TenantCreate) {
     method: "POST",
     headers: { Authorization: `Bearer ${devToken}` },
     body: JSON.stringify(payload),
+  });
+}
+
+export function setTenantPortalEnabled(devToken: string, slug: string, enabled: boolean) {
+  return request<TenantSettings>(`/api/dev/tenants/${slug}/modules`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${devToken}` },
+    body: JSON.stringify({ portal_socios_enabled: enabled }),
+  });
+}
+
+export function setTenantServices(devToken: string, slug: string, servicios: ServicioMedido[]) {
+  return request<TenantSettings>(`/api/dev/tenants/${slug}/services`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${devToken}` },
+    body: JSON.stringify({ servicios_medidos: servicios }),
   });
 }
 

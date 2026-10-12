@@ -3,6 +3,7 @@ registers a new meter reading. Kept deliberately simple: it only has to
 catch the two mistakes that actually happen in the field (misread digit,
 or skipped meter) so a human reviews before the reading feeds a bill."""
 
+import datetime as dt
 from collections.abc import Iterable
 
 from sqlalchemy import func, select
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 
 from app.models import Meter, Reading
+from app.services.service_meters import clear_sin_uso
 
 # A jump bigger than this multiple of the meter's recent average consumption
 # gets flagged for review. 4x comfortably allows for seasonal swings (e.g.
@@ -23,12 +25,14 @@ def latest_readings_by_meter(
     db: Session,
     meter_ids: Iterable[int] | Select,
     exclude_reading_ids: Iterable[int] = (),
+    before: dt.datetime | None = None,
 ) -> dict[int, Reading]:
     """Most recent reading of each given meter, in ONE query (a window
     function ranks every meter's readings newest-first and keeps rank 1),
     instead of one query per meter. `meter_ids` may be a list or a
     `select(Meter.id)...`. Readings in `exclude_reading_ids` are skipped, as
-    when a stop wants the value *before* the reading it produced itself."""
+    when a stop wants the value *before* the reading it produced itself.
+    `before` only looks at readings loaded earlier than that moment."""
     if not isinstance(meter_ids, Select):
         meter_ids = list(meter_ids)
         if not meter_ids:
@@ -43,6 +47,8 @@ def latest_readings_by_meter(
     ).where(Reading.meter_id.in_(meter_ids))
     if excluded:
         ranked = ranked.where(Reading.id.notin_(excluded))
+    if before is not None:
+        ranked = ranked.where(Reading.created_at < before)
     ranked = ranked.subquery()
 
     rows = db.query(Reading).join(ranked, Reading.id == ranked.c.id).filter(ranked.c.rn == 1).all()
@@ -67,7 +73,7 @@ def register_reading(
         .all()
     )
 
-    valor_anterior = history[0].valor if history else None
+    valor_anterior = history[0].valor if history else meter.lectura_inicial
     consumo = (valor - valor_anterior) if valor_anterior is not None else None
     observacion = _clean_observacion(observacion)
     anomala = _is_anomalous(consumo, history) or observacion is not None
@@ -86,6 +92,8 @@ def register_reading(
         observacion=observacion,
     )
     db.add(reading)
+    # Si se lo pudo leer, el servicio se usa: cae el aviso del gestor.
+    clear_sin_uso(meter)
     db.commit()
     db.refresh(reading)
     return reading
@@ -111,7 +119,7 @@ def update_reading(
         .all()
     )
 
-    valor_anterior = history[0].valor if history else None
+    valor_anterior = history[0].valor if history else reading.meter.lectura_inicial
     consumo = (valor - valor_anterior) if valor_anterior is not None else None
     # A correction without a new observación keeps the one already there:
     # the gestor's reason still explains the reading.

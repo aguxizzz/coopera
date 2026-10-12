@@ -59,6 +59,8 @@ import AdminNav, { type AdminSection } from "../components/AdminNav";
 import CutsSection, { ESTADO_LABEL } from "../components/CutsSection";
 import OrderCutDrawer from "../components/OrderCutDrawer";
 import GestorQrCard from "../components/GestorQrCard";
+import ReadingsExportCard from "../components/ReadingsExportCard";
+import MetersCard from "../components/MetersCard";
 
 const MESES = [
   "", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
@@ -131,6 +133,12 @@ function formatAuditAction(entry: AuditLogEntry): string {
       return `marcó al gestor ${auditTargetId(entry.target)} como ${auditBool(d.activo, "activo", "inactivo")}`;
     case "meter.created":
       return `creó el medidor ${d.codigo ?? ""}`;
+    case "meter.sin_uso_baja":
+      return `dio de baja el medidor ${d.codigo ?? ""} (el socio no usa el servicio)`;
+    case "meter.sin_uso_descartado":
+      return `descartó el aviso de servicio sin uso del medidor ${d.codigo ?? ""}`;
+    case "meters.imported":
+      return `importó el padrón de medidores (${d.nuevos ?? 0} nuevos, ${d.actualizados ?? 0} actualizados)`;
     case "cut.ordered":
       return `ordenó el corte ${auditTargetId(entry.target)}`;
     case "gestor.profile_selected":
@@ -296,6 +304,7 @@ export default function AdminDashboard() {
   const lastConfirmState = useRef<ConfirmState | null>(null);
   if (confirmState) lastConfirmState.current = confirmState;
   const [toast, setToast] = useState<string | null>(null);
+  const [metersVersion, setMetersVersion] = useState(0);
 
   const [cutMember, setCutMember] = useState<MemberRow | null>(null);
   const [cutDrawerOpen, setCutDrawerOpen] = useState(false);
@@ -938,9 +947,11 @@ export default function AdminDashboard() {
         <AdminNav variant="sidebar" active={section} onChange={setSection} />
 
         <div className="admin-sidebar-footer">
-          <Link className="admin-sidebar-footer-link" to={`/${tenantSlug}`}>
-            Ver portal de socios
-          </Link>
+          {settings?.portal_socios_enabled !== false && (
+            <Link className="admin-sidebar-footer-link" to={`/${tenantSlug}`}>
+              Ver portal de socios
+            </Link>
+          )}
           {currentAdmin && <span className="muted admin-sidebar-email">{currentAdmin.email}</span>}
           <button type="button" className="btn-ghost" onClick={handleLogout}>
             Cerrar sesión
@@ -1629,8 +1640,16 @@ export default function AdminDashboard() {
                   {["numero_socio", "nombre", "identificador", "consumo", "monto"].map((c) => (
                     <code key={c}>{c}</code>
                   ))}
-                  <span className="import-columns-optional">vencimiento (opcional)</span>
+                  <span className="import-columns-optional">
+                    vencimiento, direccion, consumo_inicial (opcionales)
+                  </span>
                 </div>
+                <p className="import-step-desc">
+                  <code>direccion</code> y <code>consumo_inicial</code> (lo que marca hoy el medidor) quedan en el
+                  medidor del socio, así no hace falta subir el padrón de medidores. Si la cooperativa mide más de un
+                  servicio, el consumo inicial va en una columna por servicio: <code>consumo_inicial_luz</code>,{" "}
+                  <code>consumo_inicial_agua</code>…
+                </p>
                 <DropZone
                   id="import-file"
                   files={file ? [file] : []}
@@ -1850,6 +1869,21 @@ export default function AdminDashboard() {
           onDeny={handleDenyQr}
           onCancel={handleCancelQr}
         />
+      )}
+      {section === "gestores" && token && (
+        <MetersCard
+          tenantSlug={tenantSlug}
+          token={token}
+          members={members}
+          onChanged={() => {
+            setMetersVersion((v) => v + 1);
+            refresh();
+          }}
+          onToast={setToast}
+        />
+      )}
+      {section === "gestores" && token && (
+        <ReadingsExportCard tenantSlug={tenantSlug} token={token} refreshKey={metersVersion} />
       )}
         </div>
         </main>

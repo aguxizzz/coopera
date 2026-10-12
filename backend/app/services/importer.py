@@ -5,9 +5,14 @@ import io
 import openpyxl
 from sqlalchemy.orm import Session
 
-from app.models import ImportBatch, Invoice, Member, Tenant
+from app.models import ImportBatch, Invoice, Member, Meter, Tenant
+from app.services.service_meters import ensure_service_meters, measured_services
 
 REQUIRED_COLUMNS = {"numero_socio", "nombre", "identificador", "consumo", "monto"}
+# Opcionales, para no depender del padrón de medidores: van al medidor que
+# el socio tiene por cada servicio medido. Con más de un servicio el consumo
+# inicial va en una columna por servicio (consumo_inicial_luz, ...).
+INITIAL_READING_COLUMN = "consumo_inicial"
 
 
 class ImportError_(Exception):
@@ -64,6 +69,53 @@ def _clean_float(value) -> float:
     return float(s)
 
 
+def _parse_reading(value) -> float | None:
+    """Lo que marca un medidor. None when the cell is empty; raises
+    ValueError with the reason when it isn't a valid reading."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        valor = float(value)
+    else:
+        s = _clean_str(value)
+        if not s or s.lower() == "nan":
+            return None
+        try:
+            valor = float(s.replace(",", "."))
+        except ValueError:
+            raise ValueError(f"«{s}» no es un número")
+    if valor < 0:
+        raise ValueError("no puede ser negativo")
+    return valor
+
+
+def _apply_meter_details(db: Session, member: Member, row: dict, servicios: list[str], number: int) -> None:
+    """Dirección y consumo inicial de la fila, sobre el medidor principal
+    que el socio tiene por cada servicio medido. Vacío o ausente no pisa lo
+    que ya está cargado. Doesn't commit."""
+    direccion = _clean_str(row.get("direccion"))[:255]
+    lecturas: dict[str, float] = {}
+    for tipo in servicios:
+        raw = row.get(f"{INITIAL_READING_COLUMN}_{tipo}")
+        if not _clean_str(raw) and len(servicios) == 1:
+            raw = row.get(INITIAL_READING_COLUMN)
+        try:
+            valor = _parse_reading(raw)
+        except ValueError as exc:
+            raise ImportError_(f"Fila {number}: el consumo inicial {exc}")
+        if valor is not None:
+            lecturas[tipo] = valor
+    if not direccion and not lecturas:
+        return
+
+    meters = db.query(Meter).filter(
+        Meter.member_id == member.id, Meter.adicional.is_(False), Meter.tipo.in_(servicios)
+    )
+    for meter in meters:
+        if direccion:
+            meter.direccion = direccion
+        if meter.tipo in lecturas:
+            meter.lectura_inicial = lecturas[meter.tipo]
+
+
 def _clean_date(value) -> dt.date | None:
     if value is None:
         return None
@@ -92,7 +144,7 @@ def upsert_rows(
 ) -> tuple[ImportBatch, int, int]:
     """Shared by every import source (CSV/XLSX, PDF, ...): each row is a dict
     keyed by the same field names as REQUIRED_COLUMNS plus optional
-    'vencimiento'. A key *absent* from a row (as opposed to present but
+    'vencimiento', 'direccion' and 'consumo_inicial'. A key *absent* from a row (as opposed to present but
     empty) means "this source couldn't tell us" and leaves the existing
     member/invoice value untouched instead of blanking it out — PDF profiles
     in particular may only extract a subset of fields per page."""
@@ -109,8 +161,11 @@ def upsert_rows(
 
     created = 0
     updated = 0
+    servicios = measured_services(tenant)
 
-    for row in rows:
+    # Row 1 is the header, so data starts at 2 — the number the office sees
+    # in the spreadsheet.
+    for number, row in enumerate(rows, start=2):
         numero_socio = _clean_str(row.get("numero_socio"))
         if not numero_socio:
             continue
@@ -136,6 +191,15 @@ def upsert_rows(
             if row.get("identificador") is not None:
                 member.identificador = _clean_str(row.get("identificador"))
             updated += 1
+
+        # Socios que ya existían también: cubre a los importados antes de
+        # que la cooperativa declarara sus servicios.
+        ensure_service_meters(db, tenant, member)
+        try:
+            _apply_meter_details(db, member, row, servicios, number)
+        except ImportError_:
+            db.rollback()
+            raise
 
         invoice = (
             db.query(Invoice)
@@ -182,5 +246,13 @@ def import_spreadsheet(
     missing = REQUIRED_COLUMNS - set(headers)
     if missing:
         raise ImportError_(f"Faltan columnas requeridas: {', '.join(sorted(missing))}")
+
+    servicios = measured_services(tenant)
+    if INITIAL_READING_COLUMN in headers and len(servicios) > 1:
+        por_servicio = ", ".join(f"{INITIAL_READING_COLUMN}_{tipo}" for tipo in servicios)
+        raise ImportError_(
+            f"La cooperativa mide más de un servicio: en vez de {INITIAL_READING_COLUMN} usá una columna "
+            f"por servicio ({por_servicio})"
+        )
 
     return upsert_rows(db, tenant, filename, rows, period_year, period_month)

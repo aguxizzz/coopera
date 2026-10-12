@@ -25,6 +25,18 @@ from app.services.pdf import build_boleta_pdf
 router = APIRouter(prefix="/api/t/{tenant_slug}", tags=["public"])
 
 
+def _get_portal_tenant(tenant_slug: str, db: Session) -> Tenant:
+    """Tenant for the endpoints the socio's portal uses. A cooperativa that
+    only contracted the gestor app has the portal turned off, and then none
+    of them may answer, whatever the frontend shows."""
+    tenant = get_tenant(tenant_slug, db)
+    if not tenant.portal_socios_enabled:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Esta cooperativa no tiene habilitado el portal de socios"
+        )
+    return tenant
+
+
 def _find_member(db: Session, tenant: Tenant, numero_socio: str, identificador: str) -> Member:
     member = (
         db.query(Member)
@@ -59,7 +71,7 @@ def get_tenant_info(tenant_slug: str, db: Session = Depends(get_db)):
 def lookup_member(
     request: Request, tenant_slug: str, payload: MemberLookupRequest, db: Session = Depends(get_db)
 ):
-    tenant = get_tenant(tenant_slug, db)
+    tenant = _get_portal_tenant(tenant_slug, db)
     member = _find_member(db, tenant, payload.numero_socio, payload.identificador)
 
     historial = (
@@ -95,7 +107,7 @@ def pay_invoice(
     payload: PayInvoiceRequest,
     db: Session = Depends(get_db),
 ):
-    tenant = get_tenant(tenant_slug, db)
+    tenant = _get_portal_tenant(tenant_slug, db)
     member = _find_member(db, tenant, payload.numero_socio, payload.identificador)
 
     invoice = (
@@ -129,7 +141,7 @@ def pay_invoice_helipagos(
     payload: PayInvoiceRequest,
     db: Session = Depends(get_db),
 ):
-    tenant = get_tenant(tenant_slug, db)
+    tenant = _get_portal_tenant(tenant_slug, db)
     member = _find_member(db, tenant, payload.numero_socio, payload.identificador)
 
     invoice = (
@@ -168,7 +180,7 @@ def pay_invoice_macroclick(
     de checkout de Macro para devolver de antemano: `init_point` apunta a
     nuestro propio endpoint (`routers/macroclick.py`), que sirve el form
     auto-submit."""
-    tenant = get_tenant(tenant_slug, db)
+    tenant = _get_portal_tenant(tenant_slug, db)
     member = _find_member(db, tenant, payload.numero_socio, payload.identificador)
 
     invoice = (
@@ -199,7 +211,7 @@ def download_boleta(
     identificador: str,
     db: Session = Depends(get_db),
 ):
-    tenant = get_tenant(tenant_slug, db)
+    tenant = _get_portal_tenant(tenant_slug, db)
     member = _find_member(db, tenant, numero_socio, identificador)
 
     invoice = (

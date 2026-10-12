@@ -1,3 +1,6 @@
+from app.models import Meter
+
+
 def test_dev_login_success(client, platform_user):
     resp = client.post("/api/dev/login", json={"email": platform_user.email, "password": "devsecret"})
     assert resp.status_code == 200
@@ -188,3 +191,75 @@ def test_save_pdf_profile_requires_numero_socio(client, platform_headers, tenant
         json={"field_patterns": {"monto": r"\$([0-9,]+\.[0-9]{2})"}},
     )
     assert resp.status_code == 400
+
+
+def test_update_tenant_modules_turns_portal_off_and_on(client, platform_headers, tenant):
+    resp = client.patch(
+        f"/api/dev/tenants/{tenant.slug}/modules",
+        headers=platform_headers,
+        json={"portal_socios_enabled": False},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["portal_socios_enabled"] is False
+
+    listed = client.get("/api/dev/tenants", headers=platform_headers).json()
+    assert listed[0]["portal_socios_enabled"] is False
+
+    resp = client.patch(
+        f"/api/dev/tenants/{tenant.slug}/modules",
+        headers=platform_headers,
+        json={"portal_socios_enabled": True},
+    )
+    assert resp.json()["portal_socios_enabled"] is True
+
+
+def test_update_tenant_modules_requires_platform_token(client, admin_headers, tenant):
+    resp = client.patch(
+        f"/api/dev/tenants/{tenant.slug}/modules",
+        headers=admin_headers,
+        json={"portal_socios_enabled": False},
+    )
+    assert resp.status_code == 403
+
+
+def test_update_tenant_services_gives_existing_members_their_meters(
+    client, platform_headers, tenant, member, db_session
+):
+    resp = client.patch(
+        f"/api/dev/tenants/{tenant.slug}/services",
+        headers=platform_headers,
+        json={"servicios_medidos": ["agua", "luz", "agua"]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["servicios_medidos"] == ["agua", "luz"]
+
+    listed = client.get("/api/dev/tenants", headers=platform_headers).json()
+    assert listed[0]["servicios_medidos"] == ["agua", "luz"]
+
+    # Sacar un servicio no borra medidores, y repetir no los duplica.
+    resp = client.patch(
+        f"/api/dev/tenants/{tenant.slug}/services",
+        headers=platform_headers,
+        json={"servicios_medidos": ["luz"]},
+    )
+    assert resp.json()["servicios_medidos"] == ["luz"]
+    codigos = sorted(m.codigo for m in db_session.query(Meter).filter(Meter.member_id == member.id))
+    assert codigos == ["1001-agua", "1001-luz"]
+
+
+def test_update_tenant_services_rejects_unknown_service(client, platform_headers, tenant):
+    resp = client.patch(
+        f"/api/dev/tenants/{tenant.slug}/services",
+        headers=platform_headers,
+        json={"servicios_medidos": ["cable"]},
+    )
+    assert resp.status_code == 422
+
+
+def test_update_tenant_services_requires_platform_token(client, admin_headers, tenant):
+    resp = client.patch(
+        f"/api/dev/tenants/{tenant.slug}/services",
+        headers=admin_headers,
+        json={"servicios_medidos": ["luz"]},
+    )
+    assert resp.status_code == 403

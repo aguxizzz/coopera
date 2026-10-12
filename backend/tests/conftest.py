@@ -112,6 +112,15 @@ def member(db_session, tenant):
     return m
 
 
+def new_member(db_session, tenant, numero_socio):
+    """Another socio, for tests that need several meters of the same tipo
+    (a socio has one meter per servicio)."""
+    m = Member(tenant_id=tenant.id, numero_socio=str(numero_socio), nombre=f"Socio {numero_socio}", identificador="0")
+    db_session.add(m)
+    db_session.flush()
+    return m
+
+
 @pytest.fixture()
 def gestor(db_session, tenant):
     if tenant.gestor_shared_password_hash is None:

@@ -167,6 +167,20 @@ def test_gestor_token_cannot_access_admin_routes(client, tenant, gestor_headers)
     assert resp.status_code == 401
 
 
+def test_gestor_token_cannot_pass_as_the_admin_with_the_same_id(client, tenant, admin, gestor, gestor_headers):
+    assert admin.id == gestor.id
+    resp = client.get(f"/api/t/{tenant.slug}/admin/members", headers=gestor_headers)
+    assert resp.status_code == 401
+
+
+def test_device_token_cannot_access_admin_routes(client, tenant, admin, gestor):
+    device_token = _device_login(client, tenant.slug).json()["device_token"]
+    resp = client.get(
+        f"/api/t/{tenant.slug}/admin/members", headers={"Authorization": f"Bearer {device_token}"}
+    )
+    assert resp.status_code == 401
+
+
 def test_list_meters_includes_last_reading(client, tenant, gestor_headers, meter):
     resp = client.post(
         f"/api/t/{tenant.slug}/gestor/meters/{meter.id}/readings",

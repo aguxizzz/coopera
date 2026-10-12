@@ -144,3 +144,23 @@ def test_download_boleta_pdf_no_invoices(client, tenant, member):
         params={"numero_socio": member.numero_socio, "identificador": member.identificador},
     )
     assert resp.status_code == 404
+
+
+def test_tenant_info_reports_portal_enabled_by_default(client, tenant):
+    resp = client.get(f"/api/t/{tenant.slug}")
+    assert resp.json()["portal_socios_enabled"] is True
+
+
+def test_portal_endpoints_are_closed_when_portal_is_disabled(client, tenant, member, invoice, db_session):
+    tenant.portal_socios_enabled = False
+    db_session.commit()
+    credentials = {"numero_socio": member.numero_socio, "identificador": member.identificador}
+
+    # The app and the panel still need the tenant's name and color.
+    resp = client.get(f"/api/t/{tenant.slug}")
+    assert resp.status_code == 200
+    assert resp.json()["portal_socios_enabled"] is False
+
+    assert client.post(f"/api/t/{tenant.slug}/lookup", json=credentials).status_code == 403
+    assert client.post(f"/api/t/{tenant.slug}/invoices/{invoice.id}/pay", json=credentials).status_code == 403
+    assert client.get(f"/api/t/{tenant.slug}/boleta.pdf", params=credentials).status_code == 403

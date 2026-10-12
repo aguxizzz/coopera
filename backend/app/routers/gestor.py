@@ -40,6 +40,7 @@ from app.services.audit import log_action
 from app.services.demo import is_demo, reset_demo
 from app.services.qr_login import claim as claim_qr_session, get_qr_session, resolve_status
 from app.services import routes as route_service
+from app.services.service_meters import is_sin_uso, report_sin_uso
 from app.services.readings import latest_readings_by_meter, register_reading, update_reading
 from app.services.storage import UnsupportedPhotoType, upload_reading_photo
 
@@ -247,7 +248,7 @@ def list_meters(
                 member_id=meter.member_id,
                 numero_socio=meter.member.numero_socio,
                 nombre_socio=meter.member.nombre,
-                ultima_lectura=last.valor if last else None,
+                ultima_lectura=last.valor if last else meter.lectura_inicial,
                 ultima_lectura_fecha=last.created_at if last else None,
                 ultima_lectura_anomala=last.anomala if last else False,
                 ultima_lectura_id=last.id if last else None,
@@ -561,7 +562,8 @@ def skip_stop(
     gestor: Gestor = Depends(get_current_gestor),
 ):
     """Marks a meter as not read (e.g. nobody home, inaccessible) so the
-    recorrido can move on."""
+    recorrido can move on. When the reason is that the socio doesn't use the
+    service, the meter is also left flagged for the office to confirm."""
     tenant = get_tenant(tenant_slug, db)
     run = _own_run(db, tenant.id, run_id, gestor)
     stop = _open_stop(run, stop_id)
@@ -570,6 +572,8 @@ def skip_stop(
 
     stop.status = "salteado"
     stop.motivo = payload.motivo
+    if is_sin_uso(payload.motivo):
+        report_sin_uso(stop.meter, gestor.id)
     stop.completed_at = dt.datetime.utcnow()
     db.add(stop)
     db.commit()

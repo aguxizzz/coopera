@@ -1,6 +1,7 @@
 import datetime as dt
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -47,6 +48,8 @@ from app.schemas import (
     MacroclickStatusOut,
     MemberRow,
     MeterCreate,
+    MeterImportResult,
+    MeterSinUsoResolve,
     RouteAutoGenerate,
     RouteCreate,
     RouteOut,
@@ -59,14 +62,18 @@ from app.schemas import (
     MpStatusOut,
     PdfImportJobOut,
     ReadingOut,
+    ReadingsExportSummary,
     TenantSettingsOut,
     TenantSettingsUpdate,
     TokenResponse,
     UpdateInvoicePagado,
 )
 from app.services import cuts as cut_service
+from app.services import readings_export
 from app.services.audit import log_action
 from app.services.importer import ImportError_, import_spreadsheet
+from app.services.meter_importer import RowError, import_meters, upsert_meter
+from app.services.service_meters import clear_sin_uso
 from app.services.helipagos import disconnect_tenant as disconnect_helipagos_tenant
 from app.services.helipagos import save_credentials as save_helipagos_credentials
 from app.services.macroclick import disconnect_tenant as disconnect_macroclick_tenant
@@ -830,6 +837,30 @@ def deny_gestor_qr(
 # --- Medidores y lecturas ---------------------------------------------------
 
 
+def _meter_out(meter: Meter, last: Reading | None = None, cut: ServiceCut | None = None) -> MeterOut:
+    reporter = meter.sin_uso_reportado_por
+    return MeterOut(
+        id=meter.id,
+        codigo=meter.codigo,
+        tipo=meter.tipo,
+        direccion=meter.direccion,
+        unidad=meter.unidad,
+        activo=meter.activo,
+        member_id=meter.member_id,
+        numero_socio=meter.member.numero_socio,
+        nombre_socio=meter.member.nombre,
+        ultima_lectura=last.valor if last else None,
+        ultima_lectura_fecha=last.created_at if last else None,
+        ultima_lectura_anomala=last.anomala if last else False,
+        lectura_inicial=meter.lectura_inicial,
+        adicional=meter.adicional,
+        sin_uso_reportado_at=meter.sin_uso_reportado_at,
+        sin_uso_reportado_por=reporter.nombre if reporter else None,
+        corte_estado=cut.estado if cut else None,
+        corte_id=cut.id if cut else None,
+    )
+
+
 @router.get("/meters", response_model=list[MeterOut])
 def list_meters(
     tenant_slug: str,
@@ -848,24 +879,7 @@ def list_meters(
             .order_by(Reading.created_at.desc())
             .first()
         )
-        rows.append(
-            MeterOut(
-                id=meter.id,
-                codigo=meter.codigo,
-                tipo=meter.tipo,
-                direccion=meter.direccion,
-                unidad=meter.unidad,
-                activo=meter.activo,
-                member_id=meter.member_id,
-                numero_socio=meter.member.numero_socio,
-                nombre_socio=meter.member.nombre,
-                ultima_lectura=last.valor if last else None,
-                ultima_lectura_fecha=last.created_at if last else None,
-                ultima_lectura_anomala=last.anomala if last else False,
-                corte_estado=in_cut[meter.id].estado if meter.id in in_cut else None,
-                corte_id=in_cut[meter.id].id if meter.id in in_cut else None,
-            )
-        )
+        rows.append(_meter_out(meter, last, in_cut.get(meter.id)))
     return rows
 
 
@@ -877,36 +891,104 @@ def create_meter(
     admin: AdminUser = Depends(get_current_admin),
 ):
     tenant = get_tenant(tenant_slug, db)
-    member = db.query(Member).filter(Member.id == payload.member_id, Member.tenant_id == tenant.id).first()
-    if member is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Socio no encontrado")
-    if db.query(Meter).filter(Meter.tenant_id == tenant.id, Meter.codigo == payload.codigo).first():
+    if payload.member_id is not None:
+        member = db.query(Member).filter(Member.id == payload.member_id, Member.tenant_id == tenant.id).first()
+        if member is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Socio no encontrado")
+        numero_socio = member.numero_socio
+    elif payload.numero_socio and payload.numero_socio.strip():
+        numero_socio = payload.numero_socio
+    else:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Indicá el socio del medidor")
+    codigo = payload.codigo.strip()
+    if db.query(Meter).filter(Meter.tenant_id == tenant.id, Meter.codigo == codigo).first():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Ya existe un medidor con ese código")
 
-    meter = Meter(
-        tenant_id=tenant.id,
-        member_id=member.id,
-        codigo=payload.codigo,
-        tipo=payload.tipo,
-        direccion=payload.direccion,
-        unidad=payload.unidad,
-    )
-    db.add(meter)
+    try:
+        meter, _, _ = upsert_meter(
+            db,
+            tenant,
+            {
+                "numero_socio": numero_socio,
+                "nombre": payload.nombre,
+                "medidor": codigo,
+                "tipo": payload.tipo,
+                "direccion": payload.direccion,
+                "unidad": payload.unidad,
+                "lectura_inicial": payload.lectura_inicial,
+                "adicional": payload.adicional,
+            },
+        )
+    except RowError as exc:
+        db.rollback()
+        message = str(exc)
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, message[0].upper() + message[1:])
     db.commit()
     db.refresh(meter)
     log_action(db, tenant, admin, "meter.created", target=f"meter:{meter.id}", details=f"codigo={meter.codigo}")
-    return MeterOut(
-        id=meter.id,
-        codigo=meter.codigo,
-        tipo=meter.tipo,
-        direccion=meter.direccion,
-        unidad=meter.unidad,
-        activo=meter.activo,
-        member_id=meter.member_id,
-        numero_socio=member.numero_socio,
-        nombre_socio=member.nombre,
-        ultima_lectura=None,
-        ultima_lectura_fecha=None,
+    return _meter_out(meter)
+
+
+@router.post("/meters/{meter_id}/sin-uso", response_model=MeterOut)
+def resolve_meter_sin_uso(
+    tenant_slug: str,
+    meter_id: int,
+    payload: MeterSinUsoResolve,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """Cierra el aviso de un gestor de que el socio no usa el servicio: la
+    oficina da de baja el medidor (deja de salir en la app, las rutas y la
+    exportación) o descarta el aviso y el medidor sigue como estaba."""
+    tenant = get_tenant(tenant_slug, db)
+    meter = db.query(Meter).filter(Meter.id == meter_id, Meter.tenant_id == tenant.id).first()
+    if meter is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Medidor no encontrado")
+    if meter.sin_uso_reportado_at is None or not meter.activo:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Este medidor no tiene un aviso pendiente")
+
+    if payload.baja:
+        # El aviso queda en el medidor como registro de por qué se dio de baja.
+        meter.activo = False
+    else:
+        clear_sin_uso(meter)
+    db.commit()
+    db.refresh(meter)
+    log_action(
+        db, tenant, admin, "meter.sin_uso_baja" if payload.baja else "meter.sin_uso_descartado",
+        target=f"meter:{meter.id}", details=f"codigo={meter.codigo}",
+    )
+    return _meter_out(meter)
+
+
+@router.post("/meters/import", response_model=MeterImportResult)
+async def import_meters_endpoint(
+    tenant_slug: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """Padrón de medidores desde una planilla (una fila por medidor). Se
+    puede volver a subir: crea los que faltan y actualiza los que ya están."""
+    tenant = get_tenant(tenant_slug, db)
+    content = await file.read()
+    try:
+        outcome = import_meters(db, tenant, file.filename or "padron", content)
+    except ImportError_ as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    log_action(
+        db, tenant, admin, "meters.imported",
+        details=(
+            f"nuevos={outcome.meters_created}, actualizados={outcome.meters_updated}, "
+            f"socios_nuevos={outcome.members_created}, con_error={len(outcome.errors)}"
+        ),
+    )
+    return MeterImportResult(
+        rows_processed=outcome.rows_processed,
+        meters_created=outcome.meters_created,
+        meters_updated=outcome.meters_updated,
+        members_created=outcome.members_created,
+        errors=outcome.errors,
     )
 
 
@@ -926,6 +1008,55 @@ def list_meter_readings(
         .filter(Reading.meter_id == meter.id)
         .order_by(Reading.created_at.desc())
         .all()
+    )
+
+
+@router.get("/readings/export/summary", response_model=ReadingsExportSummary)
+def export_readings_summary(
+    tenant_slug: str,
+    year: int = Query(ge=2000, le=2100),
+    month: int = Query(ge=1, le=12),
+    db: Session = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin),
+):
+    """Cuántos medidores tienen lectura en el mes, para que la oficina sepa
+    si la planilla sale completa antes de descargarla."""
+    tenant = get_tenant(tenant_slug, db)
+    rows = readings_export.period_rows(db, tenant, year, month)
+    leidos = sum(1 for row in rows if row.reading is not None)
+    return ReadingsExportSummary(total=len(rows), leidos=leidos, sin_leer=len(rows) - leidos)
+
+
+@router.get("/readings/export")
+def export_readings(
+    tenant_slug: str,
+    year: int = Query(ge=2000, le=2100),
+    month: int = Query(ge=1, le=12),
+    formato: str = Query("xlsx", pattern="^(xlsx|csv)$"),
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """Lecturas del mes en una planilla, para cargarlas en el sistema de
+    facturación de la cooperativa. Los medidores sin leer salen igual, con
+    la lectura vacía."""
+    tenant = get_tenant(tenant_slug, db)
+    rows = readings_export.period_rows(db, tenant, year, month)
+    sin_leer = sum(1 for row in rows if row.reading is None)
+    if formato == "csv":
+        content = readings_export.build_csv(rows)
+        media_type = "text/csv; charset=utf-8"
+    else:
+        content = readings_export.build_xlsx(rows)
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    log_action(
+        db, tenant, admin, "readings.exported",
+        details=f"periodo={year}-{month:02d}, formato={formato}, filas={len(rows)}, sin_leer={sin_leer}",
+    )
+    filename = f"lecturas-{tenant.slug}-{year}-{month:02d}.{formato}"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 

@@ -10,20 +10,32 @@ import {
   listTenants,
   resetTenantAdminPassword,
   savePdfProfile,
+  setTenantPortalEnabled,
+  setTenantServices,
   testPdfProfile,
   type AdminUserOut,
   type PdfProfilePreviewPage,
+  type ServicioMedido,
   type TenantSummary,
 } from "../lib/api";
 import Drawer from "../components/Drawer";
 import ConfirmDialog from "../components/ConfirmDialog";
 import FilePicker from "../components/FilePicker";
+import { TIPO_LABEL } from "../components/OrderCutDrawer";
+
+const SERVICIOS = Object.keys(TIPO_LABEL) as ServicioMedido[];
+
+function toggleServicio(servicios: ServicioMedido[], servicio: ServicioMedido) {
+  const next = servicios.includes(servicio) ? servicios.filter((s) => s !== servicio) : [...servicios, servicio];
+  return SERVICIOS.filter((s) => next.includes(s));
+}
 
 const NEW_TENANT_INITIAL = {
   slug: "",
   name: "",
   admin_email: "",
   admin_password: "",
+  servicios_medidos: [] as ServicioMedido[],
 };
 
 export default function DevDashboard() {
@@ -227,6 +239,26 @@ export default function DevDashboard() {
     }
   }
 
+  async function handleTogglePortal(tenant: TenantSummary) {
+    setLoadError(null);
+    try {
+      await setTenantPortalEnabled(token!, tenant.slug, !tenant.portal_socios_enabled);
+      refresh();
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : "No se pudo cambiar el portal de socios");
+    }
+  }
+
+  async function handleToggleServicio(tenant: TenantSummary, servicio: ServicioMedido) {
+    setLoadError(null);
+    try {
+      await setTenantServices(token!, tenant.slug, toggleServicio(tenant.servicios_medidos, servicio));
+      refresh();
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : "No se pudieron cambiar los servicios medidos");
+    }
+  }
+
   function openTenantPanel(slug: string) {
     sessionStorage.setItem(`coopera_token_${slug}`, token!);
     navigate(`/${slug}/admin/dashboard`);
@@ -282,6 +314,25 @@ export default function DevDashboard() {
               required
             />
           </label>
+          <div>
+            Servicios medidos
+            <div className="socios-chips" style={{ padding: 0 }}>
+              {SERVICIOS.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  className={`socios-chip${newTenant.servicios_medidos.includes(s) ? " is-active" : ""}`}
+                  aria-pressed={newTenant.servicios_medidos.includes(s)}
+                  onClick={() =>
+                    setNewTenant((f) => ({ ...f, servicios_medidos: toggleServicio(f.servicios_medidos, s) }))
+                  }
+                >
+                  {TIPO_LABEL[s]}
+                </button>
+              ))}
+            </div>
+            <p className="muted">Al importar socios se crea un medidor por cada servicio marcado.</p>
+          </div>
           <button type="submit" disabled={creating}>
             {creating ? "Creando..." : "Crear cooperativa"}
           </button>
@@ -301,6 +352,8 @@ export default function DevDashboard() {
               <th>Nombre</th>
               <th>Admins</th>
               <th>Socios</th>
+              <th>Servicios medidos</th>
+              <th>Portal de socios</th>
               <th></th>
             </tr>
           </thead>
@@ -311,6 +364,26 @@ export default function DevDashboard() {
                 <td data-label="Nombre">{t.name}</td>
                 <td data-label="Admins">{t.admin_count}</td>
                 <td data-label="Socios">{t.member_count}</td>
+                <td data-label="Servicios medidos">
+                  <div className="socios-chips" style={{ padding: 0 }}>
+                    {SERVICIOS.map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        className={`socios-chip${t.servicios_medidos.includes(s) ? " is-active" : ""}`}
+                        aria-pressed={t.servicios_medidos.includes(s)}
+                        onClick={() => handleToggleServicio(t, s)}
+                      >
+                        {TIPO_LABEL[s]}
+                      </button>
+                    ))}
+                  </div>
+                </td>
+                <td data-label="Portal de socios">
+                  <button type="button" className="btn-secondary" onClick={() => handleTogglePortal(t)}>
+                    {t.portal_socios_enabled ? "Activo · desactivar" : "Apagado · activar"}
+                  </button>
+                </td>
                 <td className="socios-table-actions">
                   <button type="button" onClick={() => openAdmins(t.slug)}>
                     Admins

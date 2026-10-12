@@ -154,6 +154,12 @@ def get_current_admin(
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Usuario no encontrado")
         return PlatformActor(platform_user, tenant.id)
 
+    # Gestor and device tokens are signed with the same secret and carry the
+    # same tenant_id, and a gestor's id can match an admin's: without this a
+    # gestor's phone token would pass as that admin.
+    if payload.get("gestor") or payload.get("device") or "sub" not in payload:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token inválido")
+
     if payload.get("tenant_id") != tenant.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Token no corresponde a esta cooperativa")
 

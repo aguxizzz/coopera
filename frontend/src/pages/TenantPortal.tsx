@@ -171,6 +171,18 @@ export default function TenantPortal() {
     );
   }
 
+  // The cooperativa only uses the gestor app and the panel: there is nothing
+  // for a socio to look up here.
+  if (tenant && !tenant.portal_socios_enabled) {
+    return (
+      <div className="page-center">
+        <h1>{tenant.name}</h1>
+        <p>Esta cooperativa no tiene habilitada la consulta online para socios.</p>
+        <Link to={`/${tenantSlug}/admin`}>Ingreso de administración</Link>
+      </div>
+    );
+  }
+
   const accent = tenant?.primary_color ?? "#2f5fe0";
 
   if (!account) {

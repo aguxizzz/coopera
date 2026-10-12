@@ -30,7 +30,7 @@ En vez de parsear boletas en PDF (como el sistema anterior), la cooperativa
 sube una planilla (.csv o .xlsx) una vez por mes con las columnas:
 
 ```
-numero_socio, nombre, identificador, consumo, monto, vencimiento (opcional)
+numero_socio, nombre, identificador, consumo, monto, vencimiento (opcional), direccion (opcional), consumo_inicial (opcional)
 ```
 
 El admin indica el año/mes del período al subir el archivo. La importación
