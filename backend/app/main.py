@@ -11,8 +11,6 @@ from app.config import settings
 from app.rate_limit import limiter
 from app.routers import admin, dev, gestor, helipagos, macroclick, mp, public
 
-os.makedirs(settings.upload_dir, exist_ok=True)
-
 app = FastAPI(title="Coopera API")
 
 app.state.limiter = limiter
@@ -27,7 +25,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/static", StaticFiles(directory=settings.upload_dir), name="static")
+# Local-disk uploads are only the fallback for when R2 isn't configured. On a
+# read-only filesystem (serverless) the directory can't be created, so there
+# is nothing to serve.
+try:
+    os.makedirs(settings.upload_dir, exist_ok=True)
+except OSError:
+    pass
+else:
+    app.mount("/static", StaticFiles(directory=settings.upload_dir), name="static")
 
 app.include_router(public.router)
 app.include_router(admin.router)
